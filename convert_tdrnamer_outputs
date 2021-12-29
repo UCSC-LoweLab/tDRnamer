@@ -1,0 +1,1110 @@
+#!/usr/bin/perl -w
+# convert_tdrnamer_outputs
+# Assign tDR names and reformat outputs
+
+use strict;
+use Getopt::Long;
+
+our ($opt_fasta, $opt_frag, $opt_cluster, $opt_locicluster, $opt_stk, $opt_locistk, $opt_names, $opt_namelog, $opt_command, $opt_help);
+our $fh_stk;
+our $fh_locistk;
+
+&set_options();
+my $all_clusters = &merge_clusters();
+my $tDR_names = undef;
+if ($opt_names)
+{
+	$tDR_names = &read_tDR_names();
+}
+my ($fragments, $orders) = &read_annotated_fragments();
+&check_tDR_source($fragments);
+&get_frag_cluster_info($fragments, $all_clusters);
+&get_fragment_seq($fragments);
+&compute_name($fragments);
+if (defined $tDR_names)
+{
+	if (!$opt_command)
+	{
+		&write_name_summary_json($tDR_names, $fragments);
+	}
+	&write_fragment_details($tDR_names, $fragments);
+	&write_fasta($tDR_names, $fragments);
+}
+
+else
+{
+	my @sorted_fragments = sort sort_fragments @$fragments;
+	if (!$opt_command)
+	{
+		&write_summary_json(\@sorted_fragments);
+	}
+	&write_fragment_details($tDR_names, \@sorted_fragments);
+	&write_fasta($tDR_names, \@sorted_fragments);
+}
+
+exit;
+
+
+sub set_options
+{
+	$opt_fasta = '';
+	$opt_frag = "";
+	$opt_cluster = "";
+	$opt_locicluster = "";
+	$opt_stk = "";
+	$opt_locistk = "";
+	$opt_names = "";
+	$opt_namelog = "";
+	$opt_command = 0;
+	
+	Getopt::Long::GetOptions("fasta=s", "frag=s", "cluster=s", "locicluster=s", "stk=s", "locistk=s", "names=s", "namelog=s", "command", "help|h");
+	
+	if ($opt_help || ($opt_fasta eq "" and $opt_names eq ""))
+	{
+		die "Usage: convert_tdrnamer_outputs [options]\n",
+			"Options\n",
+			"--fasta=<file name>         Fasta file of fragments\n",
+			"--frag=<file name>          Tab-deliminated file with annotated fragments\n",
+			"--cluster=<file name>       Fragment cluster file\n",
+			"--locicluster=<file name>   Pre-tRNA fragment cluster file\n",
+			"--stk=<file name>           Fragment alignment file\n",
+			"--locistk=<file name>       Pre-tRNA fragment alignment file\n",
+			"--names=<file name>         Input tDR names for searching sequences\n",
+			"--namelog=<file name>       Log file from find_tdr\n",
+			"--command                   Run as part of command-line app\n",
+			"--help -h                   Print this help\n\n";
+	}
+}
+
+sub merge_clusters
+{
+	my $all_clusters = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-groups.txt";
+	my $line = "";
+	my $cluster_count = 0;
+	my $source_start = 0;
+	my @sources = ();
+	
+	open(FILE_OUT, ">$all_clusters") or die "Fail to open $all_clusters\n";
+	open(FILE_IN, "$opt_cluster") or die "Fail to open $opt_cluster\n";
+	while ($line = <FILE_IN>)
+	{
+		if ($line =~ /^Fragment Cluster (\d+):/)
+		{
+			$cluster_count = $1;
+			$line = "tDR Group".substr($line, 16);
+			print FILE_OUT $line;
+		}
+		elsif ($line =~ /^Fragment Singleton (\d+):/)
+		{
+			$cluster_count = $1;
+			$line = "tDR".substr($line, 8);
+			print FILE_OUT $line;
+		}
+		elsif ($line =~ /^Fragment Coverage/)
+		{
+			$line = "tDR Location\n";
+			print FILE_OUT $line;
+			$source_start = 1;
+			@sources = ();
+		}
+		elsif ($line =~ /^Fragment Aminos/)
+		{
+			if (scalar(@sources) > 0)
+			{
+				my @sorted_sources = sort sort_tDR_cluster_location @sources;
+				for (my $i = 0; $i < scalar(@sorted_sources); $i++)
+				{
+					print FILE_OUT $sorted_sources[$i];
+				}
+			}
+			$source_start = 0;
+			@sources = ();
+			$line = "tDR Isotype(s)\n";
+			print FILE_OUT $line;
+		}
+		elsif ($line =~ /^Fragment Mismatches/ or $line =~ /^Fragment Alignment/)
+		{
+			$line = "tDR".substr($line, 8);
+			print FILE_OUT $line;
+		}
+		elsif ($source_start)
+		{
+			push(@sources, $line);
+		}
+		else
+		{
+			print FILE_OUT $line;
+		}
+	}
+	close(FILE_IN);
+	
+	if ($opt_locicluster ne "")
+	{
+		open(FILE_IN, "$opt_locicluster") or die "Fail to open $opt_locicluster\n";
+		while ($line = <FILE_IN>)
+		{
+			if (($line =~ /^Fragment Cluster (\d+):/) or ($line =~ /^Fragment Singleton (\d+):/))
+			{
+				my $cluster_num = $cluster_count + $1;
+				if (index($line, "Fragment Cluster") > -1)
+				{
+					print FILE_OUT "tDR Group ".$cluster_num;
+				}
+				elsif (index($line, "Fragment Singleton") > -1)
+				{
+					print FILE_OUT "tDR Singleton ".$cluster_num;
+				}
+				print FILE_OUT substr($line, index($line, ":"));
+			}
+			elsif ($line =~ /^Fragment Coverage/)
+			{
+				print FILE_OUT "tDR Location\n";
+				$source_start = 1;
+				@sources = ();
+			}
+			elsif ($line =~ /^Fragment Aminos/)
+			{
+				if (scalar(@sources) > 0)
+				{
+					my @sorted_sources = sort sort_tDR_cluster_location @sources;
+					for (my $i = 0; $i < scalar(@sorted_sources); $i++)
+					{
+						print FILE_OUT $sorted_sources[$i];
+					}
+				}
+				$source_start = 0;
+				@sources = ();
+				print FILE_OUT "tDR Isotype(s)\n";
+			}
+			elsif ($line =~ /^Fragment Mismatches/ or $line =~ /^Fragment Alignment/)
+			{
+				print FILE_OUT "tDR".substr($line, 8);
+			}
+			elsif ($source_start)
+			{
+				push(@sources, $line);
+			}
+			else
+			{
+				print FILE_OUT $line;
+			}
+		}
+		close(FILE_IN);
+	}
+
+	close(FILE_OUT);
+	
+	return $all_clusters;
+}
+
+sub read_tDR_names
+{
+	my $line = "";
+	my @tDR_names = ();
+	
+	open(FILE_IN, "$opt_names") or die "Fail to open $opt_names\n";
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if (&trim($line) ne "")
+		{
+			push(@tDR_names, $line);
+		}
+	}
+	close(FILE_IN);
+	
+	return \@tDR_names;
+}
+
+sub read_annotated_fragments
+{
+	my $line = "";
+	my $columns = [];
+	my @fragments = ();
+	my @orders = ();
+	
+	open(FILE_IN, "$opt_frag") or die "Fail to open $opt_frag\n";
+	$line = <FILE_IN>;
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		$columns = [];
+		@$columns = split(/\t/, $line);
+		$columns->[3] = join(",", sort sort_source_tRNAs (split(/\,/, $columns->[3])));
+		if ($columns->[1] eq "tRNA" and $columns->[5] =~ /^i\d+(1.+)$/)
+		{
+			$columns->[5] = $1;
+		}
+		if ($columns->[1] eq "tRNA" and $columns->[5] =~ /^(.+)i\d+$/)
+		{
+			$columns->[5] = $1;
+		}
+		if ($columns->[1] eq "pretRNA")
+		{
+			my ($start, $end) = split(/\.\./, $columns->[5]);
+			if ($start =~ /^73i(\d+)$/)
+			{
+				$start = "+".($1 - 5);
+			}
+			if ($end =~ /^73i(\d+)$/)
+			{
+				$end = "+".($1 - 5);
+			}
+			$columns->[5] = $start."..".$end;
+		}
+		push(@fragments, $columns);
+		push(@orders, $columns->[0]);
+	}
+	close(FILE_IN);
+	
+	my @sorted_fragments = sort sort_fragment_ID @fragments;
+	return (\@sorted_fragments, \@orders);
+}
+
+sub check_tDR_source
+{
+	my ($fragments) = @_;
+
+	for (my $i = 0; $i < scalar(@$fragments); $i++)
+	{
+		my $inconsistent = 0;
+		my %isotypes = ();
+		my %anticodons = ();
+		my @values = split(/\,/, $fragments->[$i]->[7]);
+		foreach my $val (@values)
+		{
+			$isotypes{$val} = 1;
+		}
+		@values = split(/\,/, $fragments->[$i]->[6]);
+		foreach my $val (@values)
+		{
+			$anticodons{$val} = 1;
+		}
+
+		my @sources = split(/\,/, $fragments->[$i]->[3]);		
+		foreach my $source (@sources)
+		{
+			my @parts = split(/-/, $source);
+			if (!defined $isotypes{$parts[1]})
+			{
+				$inconsistent = 1;
+				$isotypes{$parts[1]} = 1;
+			}
+			if (!defined $anticodons{$parts[2]})
+			{
+				$inconsistent = 1;
+				$anticodons{$parts[2]} = 1;
+			}
+		}
+
+		if ($inconsistent)
+		{
+			$fragments->[$i]->[7] = join(",", sort keys %isotypes);
+			$fragments->[$i]->[6] = join(",", sort keys %anticodons);
+		}
+	}
+}
+
+sub get_frag_cluster_info
+{
+	my ($fragments, $all_clusters) = @_;
+	my $line = "";
+	my $cluster_id = 0;
+	my $frag_str = "";
+	my $index = -1;
+	
+	open(FILE_IN, "$all_clusters") or die "Fail to open $all_clusters\n";
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if (($line =~ /^tDR Group (\d+): (.+)$/) or ($line =~ /^tDR Singleton (\d+): (.+)$/))
+		{
+			$cluster_id = $1;
+			$frag_str = $2;
+			my @frags = split(/\,/, $frag_str);
+			for (my $i = 0; $i < scalar(@frags); $i++)
+			{
+				$index = &bsearch_fragment($frags[$i], $fragments);
+				if ($index > -1)
+				{
+					if (defined $fragments->[$index]->[12])
+					{
+						push(@{$fragments->[$index]->[12]}, $cluster_id);
+						push(@{$fragments->[$index]->[13]}, (scalar(@frags)-1));
+					}
+					else
+					{
+						$fragments->[$index]->[12] = [];
+						$fragments->[$index]->[13] = [];
+						push(@{$fragments->[$index]->[12]}, $cluster_id);
+						push(@{$fragments->[$index]->[13]}, (scalar(@frags)-1));
+					}
+				}
+			}
+		}		
+	}
+	close (FILE_IN);
+	
+	for (my $j = 0; $j < scalar(@$fragments); $j++)
+	{
+		if (!defined $fragments->[$j]->[12])
+		{
+			$fragments->[$j]->[12] = [];
+			$fragments->[$j]->[13] = [];
+			push(@{$fragments->[$j]->[12]}, "N/A");
+			push(@{$fragments->[$j]->[13]}, 0);
+		}		
+	}
+}
+
+sub get_fragment_seq
+{
+	my ($fragments) = @_;
+	my $line = "";
+	my $seq_name = "";
+	my $seq = "";
+	my $index = -1;
+	
+	open(FILE_IN, "$opt_fasta") or die "Fail to open $opt_fasta\n";
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if ($line =~ /^>(\S+)/)
+		{
+			if ($seq ne "")
+			{
+				$index = &bsearch_fragment($seq_name, $fragments);
+				if ($index > -1)
+				{
+					$seq =~ s/T/U/g;
+					$fragments->[$index]->[14] = $seq;
+				}
+			}			
+			$seq_name = $1;
+			$seq = "";
+		}
+		else
+		{
+			$seq .= uc($line);
+		}
+	}
+	if ($seq ne "")
+	{
+		$index = &bsearch_fragment($seq_name, $fragments);
+		if ($index > -1)
+		{
+			$seq =~ s/T/U/g;
+			$fragments->[$index]->[14] = $seq;
+		}
+	}
+	close(FILE_IN);
+}
+
+sub compute_name
+{
+	my ($fragments) = @_;
+	
+	open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	if ($opt_locistk ne "")
+	{
+		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
+	}
+
+	for (my $i = 0; $i < scalar(@$fragments); $i++)
+	{
+		my ($name, $synonyms, $indel_counts, $mismatch_counts) = &set_tDR_name($fragments->[$i]);
+		$fragments->[$i]->[15] = $name;
+		$fragments->[$i]->[16] = $synonyms;
+		$fragments->[$i]->[17] = $indel_counts;
+		$fragments->[$i]->[18] = $mismatch_counts;
+	}
+	
+	close($fh_stk);
+	if ($opt_locistk ne "")
+	{
+		close($fh_locistk);
+	}
+}
+
+sub set_tDR_name
+{
+	my ($fragment) = @_;
+	my $name = "tDR-";
+	my @synonyms = ();
+	my $codes = [];
+	my $indel_counts = [];
+	my $mismatch_counts = [];
+	
+	my ($start, $end) = split(/\.\./, lc($fragment->[5]));
+	if ($start =~ /^\-([0-9]+)/)
+	{
+		$name .= "L".$1.":";
+	}
+	elsif ($start =~ /^\+([0-9]+)/)
+	{
+		$name .= "T".$1.":";
+	}
+	elsif ($start =~ /^i\d+1/)
+	{
+		$name .= "1:";
+	}
+	else
+	{
+		$name .= $start.":";
+	}
+	if ($end =~ /^\-([0-9]+)/)
+	{
+		$name .= "L".$1;
+	}
+	elsif ($end =~ /^\+([0-9]+)/)
+	{
+		$name .= "T".$1;
+	}
+	elsif ($end =~ /^76i[0-9]+/)
+	{
+		$name .= "76";
+	}
+	else
+	{
+		$name .= $end;
+	}
+	
+	my $prefix = $name;
+	
+#	if ($fragment->[8] > 0 or $fragment->[9] > 0)
+#	{
+		($codes, $indel_counts, $mismatch_counts) = &get_indel_mismatch($fragment);
+#	}
+	
+	my @parts = split(/\-/, $fragment->[2]);
+	my @source = split(/\,/, $fragment->[3]);
+	
+	my $iso_code = "";
+	if (scalar(@source) > 1)
+	{
+		$iso_code = "-M".scalar(@source);
+	}
+	
+	my $name_set = 0;
+	for (my $i = 0; $i < scalar(@source); $i++)
+	{
+		my $source_name = substr($source[$i], index($source[$i], "-"));
+		my $compare = "";
+		if (defined $tDR_names)
+		{
+			if (length($fragment->[0]) >= length($name.$source_name))
+			{
+				$compare = substr($fragment->[0], 0, length($name.$source_name));
+			}
+		}
+		if (!$name_set and (($i == 0 and !defined $tDR_names) or (defined $tDR_names and uc($name.$source_name) eq uc($compare))))
+		{
+			$name .= $source_name;
+			if ($fragment->[1] eq "tRNA")
+			{
+				$name .= $iso_code;
+			}
+			if (defined($codes->[0]) and $codes->[0] ne "")
+			{
+				$name .= $codes->[0];
+			}
+			$name_set = 1;
+		}
+		else
+		{
+			my $synonym = $prefix.substr($source[$i], index($source[$i], "-"));
+			if ($fragment->[1] eq "tRNA")
+			{
+				$synonym .= $iso_code;
+			}
+			if (defined($codes->[$i]) and $codes->[$i] ne "")
+			{
+				$synonym .= $codes->[$i];
+			}
+			push(@synonyms, $synonym);
+		}
+	}
+			
+	return ($name, \@synonyms, $indel_counts, $mismatch_counts);
+}
+
+sub get_indel_mismatch
+{
+	my ($fragment) = @_;
+	my $line = "";
+	my @lines = ();
+	my %seqs = ();
+	my @codes = ();
+	my @indel_counts = ();
+	my @mismatch_counts = ();
+	
+	my $alignment_file = $fh_stk;
+	
+	if ($fragment->[1] eq "pretRNA" and $opt_locistk ne "")
+	{
+		$alignment_file = $fh_locistk;
+	}
+	
+	my @source = split(/\,/, $fragment->[3]);
+	for (my $i = 0; $i < scalar(@source); $i++)
+	{
+		$seqs{$source[$i]} = $i;
+	}
+	$seqs{$fragment->[0]} = scalar(@source);
+	@codes = ("") x (scalar(@source) - 1);
+	@indel_counts = (0) x (scalar(@source) - 1);
+	@mismatch_counts = (0) x (scalar(@source) - 1);
+
+	seek($alignment_file, 0, 0);
+	while ($line = <$alignment_file>)
+	{
+		chomp($line);
+		if ($line =~ /^#/) {}
+		else
+		{
+			my ($seq_name, $align) = split(/\s+/, $line);
+			if (defined $seqs{$seq_name})
+			{
+				$lines[$seqs{$seq_name}] = $align;
+				
+				my $found = 1;
+				for (my $i = 0; $i < (scalar(@source) + 1); $i++)
+				{
+					if (!defined $lines[$i])
+					{
+						$found = 0;
+					}
+				}
+				if ($found == 1)
+				{
+					last;
+				}
+			}
+		}
+	}
+	
+	for (my $align_ct = 0; $align_ct < scalar(@source); $align_ct++)
+	{
+		my $start_frag = 0;
+		my $len_ct = 0;
+		my $ins_start = 0;
+		my $del_start = 0;
+		my $fragment_idx = scalar(@source);
+		for (my $i = 0; $i < length($lines[$align_ct]); $i++)
+		{
+			if (!$start_frag and uc(substr($lines[$fragment_idx], $i, 1)) =~ /^[ACGTU]$/)
+			{
+				$start_frag = 1;
+			}
+			if ($start_frag and $len_ct >= length($fragment->[14]))
+			{
+				$start_frag = 0;
+				last;
+			}
+			if ($start_frag)
+			{
+				if ((substr($lines[$align_ct], $i, 1) eq "." or substr($lines[$align_ct], $i, 1) eq "-") and (substr($lines[$fragment_idx], $i, 1) eq "." or substr($lines[$fragment_idx], $i, 1) eq "-"))
+				{}
+				else
+				{
+					if (uc(substr($lines[$fragment_idx], $i, 1)) =~ /^[ACGTU]$/)
+					{
+						$len_ct++;
+					}
+					if (uc(substr($lines[$align_ct], $i, 1)) ne uc(substr($lines[$fragment_idx], $i, 1)))
+					{
+						if (substr($lines[$fragment_idx], $i, 1) eq "-" or substr($lines[$fragment_idx], $i, 1) eq ".")
+						{
+							if ($del_start == 0)
+							{
+								$codes[$align_ct] .= "-D".$len_ct.uc(substr($lines[$align_ct], $i, 1));
+								$del_start = 1;
+								$indel_counts[$align_ct] += 1;
+							}
+							else
+							{
+								$codes[$align_ct] .= uc(substr($lines[$align_ct], $i, 1));
+							}
+							$ins_start = 0;
+						}
+						elsif (substr($lines[$align_ct], $i, 1) eq "-" or substr($lines[$align_ct], $i, 1) eq ".")
+						{
+							if ($ins_start == 0)
+							{
+								$codes[$align_ct] .= "-I".$len_ct.uc(substr($lines[$fragment_idx], $i, 1));
+								$ins_start = 1;
+								$indel_counts[$align_ct] += 1;
+							}
+							else
+							{
+								$codes[$align_ct] .= uc(substr($lines[$fragment_idx], $i, 1));
+							}
+							$del_start = 0;
+						}
+						else
+						{
+							$codes[$align_ct] .= "-".uc(substr($lines[$align_ct], $i, 1)).$len_ct.uc(substr($lines[$fragment_idx], $i, 1));
+							$mismatch_counts[$align_ct] += 1;
+							$ins_start = 0;
+							$del_start = 0;
+						}
+					}
+					else
+					{
+						$ins_start = 0;
+						$del_start = 0;
+					}
+				}
+			}			
+		}
+	}
+	
+	return (\@codes, \@indel_counts, \@mismatch_counts);
+}
+
+sub write_name_summary_json
+{
+	my ($tDR_names, $fragments) = @_;
+
+	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-name-tDR-summary.json";
+	my $i = -1;
+	
+	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
+	print FILE_OUT "{\n\t\"data\": [\n";
+	
+	for (my $k = 0; $k < scalar(@$tDR_names); $k++)
+	{		
+		$i = &bsearch_fragment($tDR_names->[$k], $fragments);
+		
+		if ($k > 0)
+		{
+			print FILE_OUT ",\n";
+		}
+
+		print FILE_OUT "\t\t{\n";
+				
+		print FILE_OUT "\t\t\t\"tDR_ID\": \"".$tDR_names->[$k]."\",\n";
+		if ($i == -1)
+		{
+			my $cmd = "grep \"".$tDR_names->[$k]." \" ".$opt_namelog;
+			my $result = `$cmd`;
+			if ($result ne "")
+			{
+				chomp($result);
+				print FILE_OUT "\t\t\t\"sequence\": \"".substr($result, 7)."\",\n";
+			}
+			else
+			{
+				print FILE_OUT "\t\t\t\"sequence\": \"tDR sequence is not found. Please check the tDR name format and contact us for assistance.\",\n";
+			}
+			print FILE_OUT "\t\t\t\"synonyms\": \"\",\n";
+			print FILE_OUT "\t\t\t\"length\": \"\",\n";
+			print FILE_OUT "\t\t\t\"isotype\": \"\",\n";
+			print FILE_OUT "\t\t\t\"anticodon\": \"\",\n";
+			print FILE_OUT "\t\t\t\"positions\": \"\",\n";
+			print FILE_OUT "\t\t\t\"source_type\": \"\",\n";
+			print FILE_OUT "\t\t\t\"group_id\": \"\",\n";
+			print FILE_OUT "\t\t\t\"other_tDRs_in_group\": \"\",\n";
+			
+		}
+		else
+		{
+			print FILE_OUT "\t\t\t\"sequence\": \"".$fragments->[$i]->[14]."\",\n";
+			print FILE_OUT "\t\t\t\"synonyms\": \"";
+			for (my $j = 0; $j < scalar(@{$fragments->[$i]->[16]}); $j++)
+			{
+				if ($j > 0)
+				{
+					print FILE_OUT "<br>";
+				}
+				print FILE_OUT $fragments->[$i]->[16]->[$j];
+			}
+			print FILE_OUT "\",\n";
+			print FILE_OUT "\t\t\t\"length\": \"".length($fragments->[$i]->[14])."\",\n";
+			my @isotypes = sort(split(/\,/, $fragments->[$i]->[7]));
+			my $isotype = join(", ", @isotypes);
+			print FILE_OUT "\t\t\t\"isotype\": \"".$isotype."\",\n";
+			my @anticodons = sort(split(/\,/, $fragments->[$i]->[6]));
+			my $anticodon = join(", ", @anticodons);
+			print FILE_OUT "\t\t\t\"anticodon\": \"".$anticodon."\",\n";
+			my $pos = $fragments->[$i]->[5];
+			$pos =~ s/\.\./ to /;
+			print FILE_OUT "\t\t\t\"positions\": \"".$pos."\",\n";
+			my $type = $fragments->[$i]->[1];
+			if ($fragments->[$i]->[1] eq "pretRNA")
+			{
+				$type = "pre-tRNA";
+			}
+			else
+			{
+				$type = "mature tRNA";
+			}
+			print FILE_OUT "\t\t\t\"source_type\": \"".$type."\",\n";		
+			print FILE_OUT "\t\t\t\"other_tDRs_in_group\": \"".join(", ", @{$fragments->[$i]->[13]})."\",\n";
+		}
+		print FILE_OUT "\t\t\t\"order_id\": \"".$k."\"\n";		
+		print FILE_OUT "\t\t}";		
+	}
+	print FILE_OUT "\n";
+	print FILE_OUT "\t]\n}\n";
+	close(FILE_OUT);
+}
+
+sub write_summary_json
+{
+	my ($fragments) = @_;
+	
+	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-summary.json";
+	
+	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
+	print FILE_OUT "{\n\t\"data\": [\n";
+	
+	for (my $i = 0; $i < scalar(@$fragments); $i++)
+	{
+		if ($i > 0)
+		{
+			print FILE_OUT ",\n";
+		}
+
+		print FILE_OUT "\t\t{\n";
+				
+		print FILE_OUT "\t\t\t\"tDR_ID\": \"".$fragments->[$i]->[0]."\",\n";
+		print FILE_OUT "\t\t\t\"tDR_name\": \"".$fragments->[$i]->[15]."\",\n";
+		print FILE_OUT "\t\t\t\"synonyms\": \"";
+		for (my $k = 0; $k < scalar(@{$fragments->[$i]->[16]}); $k++)
+		{
+			if ($k > 0)
+			{
+				print FILE_OUT "<br>";
+			}
+			print FILE_OUT $fragments->[$i]->[16]->[$k];
+		}
+		print FILE_OUT "\",\n";
+		my @isotypes = sort(split(/\,/, $fragments->[$i]->[7]));
+		my $isotype = join(", ", @isotypes);
+		print FILE_OUT "\t\t\t\"isotype\": \"".$isotype."\",\n";
+		my @anticodons = sort(split(/\,/, $fragments->[$i]->[6]));
+		my $anticodon = join(", ", @anticodons);
+		print FILE_OUT "\t\t\t\"anticodon\": \"".$anticodon."\",\n";
+		my @source_trnas = split(/\,/, $fragments->[$i]->[3]);
+		print FILE_OUT "\t\t\t\"mapped_isodecoder\": \"".scalar(@source_trnas)."\",\n";
+		my $pos = $fragments->[$i]->[5];
+		$pos =~ s/\.\./ to /;
+		print FILE_OUT "\t\t\t\"positions\": \"".$pos."\",\n";
+		print FILE_OUT "\t\t\t\"length\": \"".length($fragments->[$i]->[14])."\",\n";
+		my $type = $fragments->[$i]->[1];
+		if ($fragments->[$i]->[1] eq "pretRNA")
+		{
+			$type = "pre-tRNA";
+		}
+		else
+		{
+			$type = "mature tRNA";
+		}
+		print FILE_OUT "\t\t\t\"source_type\": \"".$type."\",\n";		
+		print FILE_OUT "\t\t\t\"other_tDRs_in_group\": \"".join(", ", @{$fragments->[$i]->[13]})."\"\n";
+		
+		print FILE_OUT "\t\t}";		
+	}
+	print FILE_OUT "\n";
+	print FILE_OUT "\t]\n}\n";
+	close(FILE_OUT);
+}
+
+sub write_fragment_details
+{
+	my ($tDR_names, $fragments) = @_;
+	
+	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-info.txt";
+	my $fh;
+	
+	open($fh, ">$filename") or die "Fail to open $filename\n";
+	print $fh "seq_name\tsource_type\ttDR_name\tsynonyms\tsource_tRNAs\tlength\tposition\tanticodon\tisotype\tmismatches\tindels\tmismatch_locations\ttRNA_domains\tgroup_ID\tother_tDRs_in_group\tsequence\n";
+	
+	if (defined $tDR_names)
+	{
+		for (my $k = 0; $k < scalar(@$tDR_names); $k++)
+		{		
+			my $i = -1;
+			$i = &bsearch_fragment($tDR_names->[$k], $fragments);
+			if ($i > -1)
+			{
+				&write_detail_line($fragments, $i, $fh);
+			}			
+		}
+	}
+	else
+	{
+		for (my $i = 0; $i < scalar(@$fragments); $i++)
+		{
+			&write_detail_line($fragments, $i, $fh);
+		}
+	}
+	
+	close($fh);
+}
+
+sub write_detail_line
+{
+	my ($fragments, $i, $fh) = @_;
+	
+	my @source = split(/\,/, $fragments->[$i]->[3]);
+	my $max_mismatch = 0;
+	for (my $k = 0; $k < scalar(@{$fragments->[$i]->[18]}); $k++)
+	{
+		if ($max_mismatch < $fragments->[$i]->[18]->[$k])
+		{
+			$max_mismatch = $fragments->[$i]->[18]->[$k];
+		}					
+	}
+	for (my $j = 0; $j < scalar(@{$fragments->[$i]})-4; $j++)
+	{
+		if ($j > 0)
+		{
+			print $fh "\t";
+		}
+		if ($j == 1)
+		{
+			if ($fragments->[$i]->[$j] eq "pretRNA")
+			{
+				print $fh "pre-tRNA";
+			}
+			else
+			{
+				print $fh "mature tRNA";
+			}
+		}
+		elsif ($j == 2)
+		{
+			print $fh $fragments->[$i]->[15]."\t";
+			if (scalar(@{$fragments->[$i]->[16]}) > 0)
+			{
+				print $fh join(",", @{$fragments->[$i]->[16]});
+			}
+			else
+			{
+				print $fh "None";
+			}
+		}
+		elsif ($j == 8)
+		{
+			print $fh $max_mismatch;
+		}
+		elsif ($j == 9)
+		{
+			my $max_indel = 0;
+			for (my $k = 0; $k < scalar(@{$fragments->[$i]->[17]}); $k++)
+			{
+				if ($max_indel < $fragments->[$i]->[17]->[$k])
+				{
+					$max_indel = $fragments->[$i]->[17]->[$k];
+				}					
+			}
+			print $fh $max_indel;
+		}
+		elsif ($j == 10)
+		{
+			if ($fragments->[$i]->[$j] ne "None")
+			{
+				if ($max_mismatch == 0)
+				{
+					print $fh "None";
+				}
+				else
+				{
+					my @mismatches = split(/\,/,  $fragments->[$i]->[$j]);
+					for (my $k = 0; $k < scalar(@mismatches); $k++)
+					{
+						my ($frag, $pos, $ref) = split(/\:/, $mismatches[$k]);
+						if ($k > 0)
+						{
+							print $fh ",";
+						}						
+						print $fh $ref.":".$pos.":".$frag;
+					}
+				}
+			}
+			else
+			{
+				if ($max_mismatch > 0 and scalar(@source) > 1)
+				{
+					print $fh "NA";
+				}
+				else
+				{
+					print $fh $fragments->[$i]->[$j];
+				}
+			}
+		}
+		elsif ($j == 12)
+		{
+			print $fh join(",", @{$fragments->[$i]->[$j]});
+		}
+		elsif ($j == 13)
+		{
+			print $fh join(",", @{$fragments->[$i]->[$j]});
+		}
+		else
+		{
+			print $fh $fragments->[$i]->[$j];
+		}
+	}
+	print $fh "\n";
+}
+
+sub write_fasta
+{
+	my ($tDR_names, $fragments) = @_;
+	
+	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR.fa";
+	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
+	
+	if (defined $tDR_names)
+	{
+		for (my $k = 0; $k < scalar(@$tDR_names); $k++)
+		{		
+			my $i = -1;
+			$i = &bsearch_fragment($tDR_names->[$k], $fragments);
+			if ($i > -1)
+			{
+				print FILE_OUT ">".$fragments->[$i]->[15]." Sprinzl position: ".$fragments->[$i]->[5]."\n";
+				print FILE_OUT $fragments->[$i]->[14]."\n";
+			}			
+		}
+	}
+	else
+	{
+		for (my $i = 0; $i < scalar(@$fragments); $i++)
+		{
+			print FILE_OUT ">".$fragments->[$i]->[15]." Seq_ID:".$fragments->[$i]->[0]." Sprinzl_position: ".$fragments->[$i]->[5]."\n";
+			print FILE_OUT $fragments->[$i]->[14]."\n";
+		}
+	}
+	
+	close(FILE_OUT);
+
+}
+
+sub sort_fragments
+{
+	return (
+			$a->[3] cmp $b->[3] ||
+			$a->[1] cmp $b->[1] ||
+			$a->[2] cmp $b->[2] ||
+			$a->[0] cmp $b->[0]
+			);
+}
+
+sub sort_fragment_ID
+{
+	return (
+			$a->[0] cmp $b->[0]
+			);
+}
+
+sub sort_source_tRNAs
+{
+	my (@parts_a) = split(/\-/, $a);
+	my (@parts_b) = split(/\-/, $b);
+
+	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt")
+	{
+		$parts_a[1] = $parts_a[0]."-".$parts_a[1];
+		shift @parts_a;
+	}
+	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt")
+	{
+		$parts_b[1] = $parts_b[0]."-".$parts_b[1];
+		shift @parts_b;
+	}
+
+	if (scalar(@parts_a) > 4 and scalar(@parts_b) > 4)
+	{
+		return (
+			$parts_a[0] cmp $parts_b[0] ||
+			$parts_a[1] cmp $parts_b[1] ||
+			$parts_a[2] cmp $parts_b[2] ||
+			$parts_a[3] <=> $parts_b[3] ||
+			$parts_a[4] <=> $parts_b[4]
+		);
+	}
+	else
+	{
+		return (
+			$parts_a[0] cmp $parts_b[0] ||
+			$parts_a[1] cmp $parts_b[1] ||
+			$parts_a[2] cmp $parts_b[2] ||
+			$parts_a[3] <=> $parts_b[3]
+		);
+	}
+}
+
+sub sort_tDR_cluster_location
+{
+	my ($gene_a, $dummy_a) = split(/:/, $a);
+	my ($gene_b, $dummy_b) = split(/:/, $b);
+	my (@parts_a) = split(/\-/, $gene_a);
+	my (@parts_b) = split(/\-/, $gene_b);
+
+	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt")
+	{
+		$parts_a[1] = $parts_a[0]."-".$parts_a[1];
+		shift @parts_a;
+	}
+	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt")
+	{
+		$parts_b[1] = $parts_b[0]."-".$parts_b[1];
+		shift @parts_b;
+	}
+
+	if (scalar(@parts_a) > 4 and scalar(@parts_b) > 4)
+	{
+		return (
+			$parts_a[0] cmp $parts_b[0] ||
+			$parts_a[1] cmp $parts_b[1] ||
+			$parts_a[2] cmp $parts_b[2] ||
+			$parts_a[3] <=> $parts_b[3] ||
+			$parts_a[4] <=> $parts_b[4]
+		);
+	}
+	else
+	{
+		return (
+			$parts_a[0] cmp $parts_b[0] ||
+			$parts_a[1] cmp $parts_b[1] ||
+			$parts_a[2] cmp $parts_b[2] ||
+			$parts_a[3] <=> $parts_b[3]
+		);
+	}
+}
+
+sub bsearch_fragment
+{
+    my ($x, $a) = @_;
+    my ($l, $u) = (0, scalar(@$a) - 1);  
+    my $i;                       
+    while ($l <= $u)
+	{
+		$i = int(($l + $u)/2);
+		if ($a->[$i]->[0] lt $x)
+		{
+			$l = $i+1;
+		}
+		elsif ($a->[$i]->[0] gt $x)
+		{
+			$u = $i-1;
+		} 
+		else
+		{
+			return $i;
+		}
+    }
+    return -1;         
+}
+
+sub trim
+{
+	my ($value) = @_;
+	$value =~ s/\ //g;
+	return $value;
+}

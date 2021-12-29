@@ -1,0 +1,11 @@
+name: tdrnamer_env
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=2.7
+  - tbb=2020.2
+  - bowtie2=2.3.5
+  - infernal=1.1.4
+  - pysam=0.15.3
+  - samtools=1.9

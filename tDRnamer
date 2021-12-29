@@ -1,0 +1,804 @@
+#! /usr/bin/perl
+#
+# ------------------------------------------------------------------------------
+# tDRnamer: Standardized naming for tRNA-derived RNAs
+#
+# Copyright (C) 2021-Present Andrew D. Holmes, Patricia P. Chan and Todd M. Lowe 
+#
+# Department of Biomolecular Engineering, Baskin School of Engineering
+# University of California Santa Cruz
+# Santa Cruz, CA 95064
+#
+# trna@soe.ucsc.edu
+# http://trna.ucsc.edu/
+# ------------------------------------------------------------------------------
+#
+
+use strict;
+use Getopt::Long;
+
+our $version = "1.0.0"; 
+our $release_date = "Dec 2021";
+our $program_id = "tDRnamer ".$version;
+
+our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_minread, $opt_minlen, $opt_maxlen,
+    $opt_force, $opt_cores, $opt_help);
+our $log = undef;
+our $script_path = "";
+
+&set_options();
+$script_path = &get_script_path();
+&initialize_log();
+if (&check_options())
+{
+    if ($opt_force or (!-r "$opt_output-tDR-info.txt" and !-r "$opt_output-tDR-groups.txt" and !-r "$opt_output-tDR.fa"))
+    {
+        if (lc($opt_mode) eq "seq")
+        {
+            &search_by_seq();
+        }
+        else
+        {
+            &search_by_name();
+        }
+    }
+    else
+    {
+        &write_message("Error", "Output files already exist. Please use --force option to overwrite them."); 
+    }
+}
+&close_log();
+
+exit;
+
+sub search_by_seq
+{
+    my $result = 1;
+    my $fasta_file = $opt_seq;
+    my ($filtered_fasta, $reformatted_fasta, $seq_count);
+    my ($tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+    my $tDR_cluster = $opt_output."-clusters.txt";
+    my $pre_tDR_cluster = $opt_output."-pre-clusters.txt";
+
+    if (&is_fastq_file())
+    {
+        ($result, $fasta_file) = &collapse_reads();
+    }
+    if ($result)
+    {
+        ($result, $filtered_fasta, $seq_count) = &check_tDR_sequences($fasta_file);
+    }
+    if ($result)
+    {
+        ($reformatted_fasta, $seq_count) = &reformat_fasta($filtered_fasta);
+    }
+    if ($seq_count > 0)
+    {
+        ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+        if ($result)
+        {
+            &write_message("Status", $tDR_count." sequences are identified as tDRs."); 
+
+            if ((lc($opt_source) eq "euk" and $mat_tRNA_tDR_count > 0) or lc($opt_source) ne "euk")
+            {
+                $result = &cluster_tDRs($tDRs_list, $tDRs_stk, $tDR_cluster);
+            }
+            if ($result and lc($opt_source) eq "euk" and $pre_tRNA_tDR_count > 0)
+            {
+                $result = &cluster_tDRs($tDRs_list, $pre_tDRs_stk, $pre_tDR_cluster);
+            }
+            if (!$result)
+            {
+                &write_message("Error", "Fail to group tDRs.");
+            }
+            if ($result)
+            {
+                $result = &convert_tdrnamer_outputs($filtered_fasta, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster);
+            }
+            else
+            {
+                &write_message("Error", "Fail to group tDRs derived from pre-tRNAs.");
+            }
+            if ($result)
+            {
+                &write_message("Status", "Process completed."); 
+            }
+            else
+            {
+                &write_message("Error", "Fail to summarize tDR results.");
+            }
+        }
+        else
+        {
+            &write_message("Status", "No tDR is found."); 
+        }
+    }
+    else
+    {
+        &write_message("Error", "No tDR sequence is found after filtering. Search terminated.");
+    }
+}
+
+sub search_by_name
+{
+    my ($temp_fasta_file, $tDR_seq_count);
+    my ($reformatted_fasta, $seq_count);
+    my ($tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+    my $tDR_cluster = $opt_output."-clusters.txt";
+    my $pre_tDR_cluster = $opt_output."-pre-clusters.txt";
+
+    my ($result, $filtered_names, $name_count) = &check_tDR_names();
+    if ($result)
+    {
+        ($result, $temp_fasta_file, $tDR_seq_count) = &find_tDRs($filtered_names);
+        if ($result)
+        {
+            &write_message("Status", "Sequences for ".$tDR_seq_count." tDR names are found.");
+        }
+        else
+        {
+            &write_message("Error", "Sequences are not found for provided tDR names.");
+        }
+        if ($result)
+        {
+            ($reformatted_fasta, $seq_count) = &reformat_fasta($temp_fasta_file);
+        }
+        if ($result)
+        {
+            ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+            if ($result)
+            {
+                if ($tDR_count < $tDR_seq_count)
+                {
+                    &write_message("Status", $tDR_count." tDR sequences are verified with reference database search."); 
+                }
+                if ((lc($opt_source) eq "euk" and $mat_tRNA_tDR_count > 0) or lc($opt_source) ne "euk")
+                {
+                    $result = &cluster_tDRs($tDRs_list, $tDRs_stk, $tDR_cluster);
+                }
+                if ($result and lc($opt_source) eq "euk" and $pre_tRNA_tDR_count > 0)
+                {
+                    $result = &cluster_tDRs($tDRs_list, $pre_tDRs_stk, $pre_tDR_cluster);
+                }
+                if (!$result)
+                {
+                    &write_message("Error", "Fail to group tDRs.");
+                }
+                if ($result)
+                {
+                    $result = &convert_tdrnamer_outputs($temp_fasta_file, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster);
+                }
+                else
+                {
+                    &write_message("Error", "Fail to group tDRs derived from pre-tRNAs.");
+                }
+                if ($result)
+                {
+                    &write_message("Status", "Process completed."); 
+                }
+                else
+                {
+                    &write_message("Error", "Fail to summarize tDR results.");
+                }
+            }
+            else
+            {
+                &write_message("Status", "No tDR sequence can be verified."); 
+            }
+        }
+   }
+    else
+    {
+        &write_message("Error", "No tDR names are found after filtering. Search terminated.");
+    }
+}
+
+sub is_fastq_file
+{
+    my $result = 0;
+    if ($opt_seq =~ /\.fastq$/ or $opt_seq =~ /\.fastq.gz$/ or $opt_seq =~ /\.fq$/ or $opt_seq =~ /\.fq.gz$/)
+    {
+        $result = 1;
+    }
+    return $result;
+}
+
+sub collapse_reads
+{
+    my $result = 0;
+    my $fasta_file = $opt_output."-unique-seq.fa";
+    my $temp_log = $opt_output."-run$$.log";
+    my $cmd = $script_path."collapsefragments.py --trimcutoff=".$opt_minread." ".$opt_seq." > ".$fasta_file." 2>".$temp_log;
+    &write_message("Status", "Extracting unique sequencing reads from ".$opt_seq);
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+    
+    if ($opt_seq =~ /\.gz$/)
+    {
+        $cmd = "gunzip -c $opt_seq | wc -l";
+    }
+    else
+    {
+        $cmd = "wc -l $opt_seq";
+    }
+    my $read_count = `$cmd` / 4;
+    &write_message("", "Total number of reads: ".$read_count);
+    if (-r $fasta_file and -s $fasta_file)
+    {
+        $result = 1;
+        $cmd = "wc -l $fasta_file";
+        my $frag_count = `$cmd` / 2;
+        &write_message("", "Total number of unique reads: ".$frag_count);
+    }
+
+    return ($result, $fasta_file);
+}
+
+sub check_tDR_sequences
+{
+    my ($fasta_file) = @_;
+    my $result = 0;
+    my $seq_count = 0;
+    my $temp_log = $opt_output."-run$$.log";
+    my $filtered_fasta = $opt_output."-filtered-seq.fa";
+
+    my $cmd = $script_path."check_input_tdr --fasta ".$fasta_file." --filter ".$filtered_fasta." --min ".$opt_minlen;
+    if ($opt_maxlen != 0)
+    {
+        $cmd .= " --max ".$opt_maxlen;
+    }
+    else
+    {
+        $cmd .= " --max 999";
+    }
+    $cmd .= " > ".$temp_log;
+    &write_message("Status", "Checking sequences in ".$fasta_file);
+    system($cmd);
+    &write_exec_log($temp_log);
+
+    my @lines = split(/\n/, `tail -n 6 $temp_log`);
+    for (my $i = 0; $i < scalar(@lines); $i++)
+    {
+        my ($tag, $value) = split(/: /, $lines[$i]);
+        if ($i == 0 and $value > 0)
+        {
+            &write_message("Warning", "$value sequences do not have sequence name. Sequences have been filtered.");
+        }
+        elsif ($i == 2 and $value > 0)
+        {
+            &write_message("Warning", "$value sequences are below minimum length. Sequences have been filtered.");
+        }
+        elsif ($i == 3 and $value > 0)
+        {
+            &write_message("Warning", "$value sequences are above maximum length. Sequences have been filtered.");
+        }
+        elsif ($i == 4 and $value > 0)
+        {
+            &write_message("Warning", "$value contain invalid character(s). Only A, C, G, T, and U are accepted. Sequences have been filtered");
+        }
+        elsif ($i == 5 and $value > 0)
+        {
+            $result = 1;
+            $seq_count = $value;
+        }
+    }
+
+    system("rm $temp_log");
+    return ($result, $filtered_fasta, $seq_count);
+}
+
+sub reformat_fasta
+{
+    my ($fasta_file) = @_;
+    my $reformatted_fasta = $opt_output."-reformatted-seq.fa";
+    my $line = "";
+    my $seq_name = "";
+    my $seq = "";
+    my $count = 0;
+
+    &write_message("Status", "Reformat sequences in ".$fasta_file);
+
+    open (FILE_OUT, ">$reformatted_fasta") || die "Fail to open $reformatted_fasta\n";
+    open (FILE_IN, "$fasta_file") || die "Fail to open $fasta_file\n";
+    while ($line = <FILE_IN>)
+    {
+        if ($line =~ /^>/)
+        {
+            if ($seq ne "")
+            {
+                $seq = uc($seq);
+                $seq =~ s/U/T/g;
+                print FILE_OUT $seq_name;
+                print FILE_OUT $seq."\n";
+                $count++;
+            }
+            $seq_name = $line;
+            $seq = "";
+        }
+        else
+        {
+            chomp($line);
+            $seq .= $line;
+        }
+    }
+    if ($seq ne "")
+    {
+        $seq = uc($seq);
+        $seq =~ s/U/T/g;
+        print FILE_OUT $seq_name;
+        print FILE_OUT $seq."\n";
+        $count++;
+    }
+    close (FILE_IN);
+    close (FILE_OUT);
+
+    return ($reformatted_fasta, $count);
+}
+
+sub name_tDRs
+{
+    my ($fasta_file) = @_;
+    my $temp_log = $opt_output."-run$$.log";
+    my $bowtie_log = $opt_output."-bowtie.log";
+    my $tDRs_stk = $opt_output."-tDRs.stk";
+    my $tDRs_list = $opt_output."-tDR-list.txt";
+    my $pre_tDRs_stk = $opt_output."-pre-tDRs.stk";
+    my $tDR_count = 0;
+    my $pre_tRNA_tDR_count = 0;
+    my $mat_tRNA_tDR_count = 0;
+    my $result = 0;
+
+    my $cmd = "bowtie2 -f -x ".$opt_db."-tRNAgenome -k 100 --very-sensitive --ignore-quals --np 5 --reorder -p ".$opt_cores." -U ".$fasta_file." 2>".$bowtie_log." | ".$script_path."nametdrs.py ".
+        $opt_db." ".$tDRs_stk;
+    if (lc($opt_source) eq "euk")
+    {
+        $cmd .= " ".$pre_tDRs_stk;
+    }
+    $cmd .= " >".$tDRs_list." 2>".$temp_log;
+    &write_message("Status", "Search sequences against reference database");
+    system($cmd);
+    &write_message("Status", "Align sequences with bowtie2");
+    &write_exec_log($bowtie_log);
+    system("rm $bowtie_log");
+    &write_message("Status", "Filtering and identifying tDRs");
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r $tDRs_list and -s $tDRs_list)
+    {
+        $cmd = "wc -l ".$tDRs_list;
+        my ($count, $dummy) = split(/\s+/, `$cmd`);
+        if ($count > 1)
+        {
+            $result = 1;
+            $tDR_count = $count - 1;
+
+            $cmd = "cut -f 2 ".$tDRs_list." | sort | uniq -c | grep tRNA";
+            my @lines = split(/\n/, `$cmd`);
+            for(my $i = 0; $i < scalar(@lines); $i++)
+            {
+                if ($lines[$i] =~ /(\d+)\s+(\S+)$/)
+                {
+                    if ($2 eq "pretRNA")
+                    {
+                        $pre_tRNA_tDR_count = $1;
+                    }
+                    else
+                    {
+                        $mat_tRNA_tDR_count = $1;
+                    }
+                }
+            }
+        }
+    }
+
+    return ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+}
+
+sub cluster_tDRs
+{
+    my ($tDRs_list, $tDRs_stk, $tDR_cluster) = @_;
+    my $temp_log = $opt_output."-run$$.log";
+    my $result = 0;
+
+    my $cmd = $script_path."clustertdrs.py ".$tDRs_list." ".$tDRs_stk." >".$tDR_cluster." 2>".$temp_log;
+    &write_message("Status", "Grouping tDRs");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r $tDR_cluster and -s $tDR_cluster)
+    {
+        $result = 1;
+    }
+
+    return $result;
+}
+
+sub convert_tdrnamer_outputs
+{
+    my ($fasta_file, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster) = @_;
+    my $temp_log = $opt_output."-run$$.log";
+    my $result = 1;
+
+    my $cmd = $script_path."convert_tdrnamer_outputs --command --fasta ".$fasta_file." --frag ".$tDRs_list." --cluster ".$tDR_cluster." --stk ".$tDRs_stk;
+    if (lc($opt_source) eq "euk" and -r $pre_tDR_cluster and -s $pre_tDR_cluster)
+    {
+        $cmd .= " --locicluster ".$pre_tDR_cluster." --locistk ".$pre_tDRs_stk;
+    }
+    $cmd .= " 2>".$temp_log;
+    &write_message("Status", "Naming tDRs and summarizing results");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r "$opt_output-tDR-info.txt" and -r "$opt_output-tDR-groups.txt" and -r "$opt_output-tDR.fa")
+    {
+        my ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR-groups.txt`);
+        if ($line_count < 1)
+        {
+            $result = 0;
+        }
+        ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR-info.txt`);
+        if ($line_count <= 1)
+        {
+            $result = 0;
+        }
+        ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR.fa`);
+        if ($line_count < 1)
+        {
+            $result = 0;
+        }
+    }
+    else
+    {
+        $result = 0;
+    }
+
+    return $result;
+}
+
+sub check_tDR_names
+{
+    my $result = 0;
+    my $name_count = 0;
+    my $temp_log = $opt_output."-run$$.log";
+    my $filtered_names = $opt_output."-filtered-names.txt";
+    my $cmd = $script_path."check_input_tdr_name --name ".$opt_name." --filter ".$filtered_names;
+    if (lc($opt_source) eq "euk")
+    {
+        $cmd .= " --precursor";
+    }
+    $cmd .= " > ".$temp_log;
+    &write_message("Status", "Checking tDR names in ".$opt_name);
+    system($cmd);
+    &write_exec_log($temp_log);
+
+    my @lines = split(/\n/, `tail -n 3 $temp_log`);
+    for (my $i = 0; $i < scalar(@lines); $i++)
+    {
+        my ($tag, $value) = split(/: /, $lines[$i]);
+        if ($i == 0 and $value > 0)
+        {
+            &write_message("Warning", "$value tDR names have invalid character(s). Entries have been filtered.");
+        }
+        elsif ($i == 1 and $value > 0)
+        {
+            &write_message("Warning", "$value tDR names have invalid format. Entries have been filtered.");
+        }
+        elsif ($i == 2 and $value > 0)
+        {
+            $result = 1;
+            $name_count = $value;
+        }
+    }
+
+    system("rm $temp_log");
+    return ($result, $filtered_names, $name_count);
+}
+
+sub find_tDRs
+{
+    my ($filtered_names) = @_;
+    my $result = 0;
+    my $find_tdr_log = $opt_output."-find-tdrs.log";
+    my $temp_fasta_file = $opt_output."-found-seq.fa";
+    my $genome_file = $opt_db."-genome-info.txt";
+    my $tDR_count = 0;
+    
+    my $cmd = $script_path."find_tdr --names ".$filtered_names." --db ".$opt_db." --fasta ".$temp_fasta_file; 
+    if (-r $genome_file)
+    {
+        $cmd .= " --genomes ".$genome_file;
+    }
+    $cmd .= " > ".$find_tdr_log;
+    &write_message("Status", "Searching sequences by tDR names in ".$filtered_names);
+    system($cmd);
+    &write_exec_log($find_tdr_log);
+
+    if (-r $temp_fasta_file and -s $temp_fasta_file)
+    {
+        $cmd = "wc -l ".$temp_fasta_file;
+        my ($count, $dummy) = split(/\s+/, `$cmd`);
+        if ($count > 1)
+        {
+            $result = 1;
+            $tDR_count = $count / 2;
+        }
+    }
+
+    return ($result, $temp_fasta_file, $tDR_count);
+}
+
+sub display_credits
+{
+    print STDERR "Copyright (C) 2021-Present Andrew D. Holmes, Patricia P. Chan and Todd M. Lowe\n",
+                 "                           University of California Santa Cruz\n",
+                 "Freely distributed under the GNU General Public License (GPLv3)\n\n";
+}
+
+sub print_usage
+{
+    print STDERR "\nUsage: tDRnamer [-options]\n\n";
+    print STDERR "  Standardized naming for tRNA-derived RNAs\n\n",
+    "Required Options:\n",
+    "  -m  --mode <value>     : tDRnamer search mode\n",
+    "                               seq - search by sequence (default)\n",
+    "                               name - search by tDR name\n",
+    "  -s  --seq <file>       : Input sequence file determined by file extension\n",
+    "                               - only applicable with --mode=seq\n",
+    "                               FASTA file with .fa or .fasta file extension\n",
+    "                               FASTQ file with .fq or .fastq file extension\n",
+    "                               Compressed FASTA file with .fa.gz or .fasta.gz file extension\n",
+    "                               Gzip compressed FASTQ file with .fq.gz or .fastq.gz file extension\n",
+    "                               (FASTQ file should contain single-end reads or pre-merged paired-end reads.)\n",
+    "  -n  --name <file>      : Input tDR name file in single-column text file format\n",
+    "                               - only applicable with --mode=name\n",
+    "  -d  --db <db name>     : Directory and name of reference database\n",
+    "  -r  --source <name>    : Sequence source of reference\n",
+    "                               euk - eukaryotes (default)\n",
+    "                               bact - bacteria\n",
+    "                               arch - archaea\n",
+    "  -o  --output <name>    : Directory and prefix for all default output file names\n",
+    "\n",
+    "Other Options:\n",
+    "  -q  --force            : Force to overwrite output files\n",
+    "      --minread <number> : Minimum number of identical sequencing reads to be considered as a tDR (default = 10)\n",
+    "                               - only applicable with --mode=seq and --seq is FASTQ file\n",
+    "      --minlen <number>  : Minimum sequence length (nt) to be considered as a tDR (default = 15)\n",
+    "                               - only applicable with --mode=seq\n",
+    "                               - specify value as 0 to skip minimum sequence length constraint\n",
+    "      --maxlen <number>  : Maximum sequence length (nt) to be considered as a tDR (default = 60)\n",
+    "                               - only applicable with --mode=seq\n",
+    "                               - specify value as 0 to skip maximum sequence length constraint\n",
+    "  -c  --cores <number>   : Number of processing cores to used for sequence search (default = 4)\n",
+    "  -h  --help             : Print available options\n\n";
+}
+
+sub set_options
+{    
+    $opt_mode = "seq";
+    $opt_seq = "";
+    $opt_name = "";
+    $opt_db = "";
+    $opt_source = "euk";
+    $opt_output = "";
+    $opt_force = 0;
+    $opt_cores = 4;
+    $opt_minread = 10;
+    $opt_minlen = 15;
+    $opt_maxlen = 60;
+    $opt_help = 0;
+
+    Getopt::Long::Configure("bundling", "no_auto_abbrev");
+    my $result = Getopt::Long::GetOptions("mode|m=s", "seq|s=s", "name|n=s", "db|d=s", "source|r=s", "output|o=s", 
+        "minread=i", "minlen=i", "maxlen=i",
+        "force|q", "cores|c=i", "help|h");
+
+    if (!$result or $opt_help or ($opt_seq eq "" and $opt_name eq "") or $opt_db eq "" or $opt_output eq "")
+    {
+        print STDERR "\ntDRnamer $version ($release_date)\n";
+        &display_credits();
+        &print_usage();
+        exit(0);
+    }
+}
+
+sub check_options
+{
+    my $valid = 1;
+    &write_message("Status", "Checking input options");
+
+    if (lc($opt_mode) ne "seq" and lc($opt_mode) ne "name")
+    {
+        &write_message("Error", "Invalid search mode (-m). Please specify \"seq\" or \"name\".");
+        $valid = 0;
+    }
+    if (lc($opt_mode) eq "seq" and $opt_seq eq "")
+    {
+        &write_message("Error", "Input sequence file is missing for sequence search mode. Please specify with -s option.");
+        $valid = 0;
+    }
+    if (lc($opt_mode) eq "name" and $opt_name eq "")
+    {
+        &write_message("Error", "Input tDR name file is missing for tDR name search mode. Please specify with -n option.");
+        $valid = 0;
+    }
+    if ($opt_db eq "")
+    {
+        &write_message("Error", "Reference database is missing. Please specify with -d option.");
+        $valid = 0;
+    }
+    if (lc($opt_source) ne "euk" and lc($opt_source) ne "bact" and lc($opt_source) ne "arch")
+    {
+        &write_message("Error", "Invalid source of reference database. Please specify \"euk\", \"bact\", or \"arch\".");
+        $valid = 0;
+    }
+    if ($opt_output eq "")
+    {
+        &write_message("Error", "Output directory/prefix is missing. Please specify with -o option.");
+        $valid = 0;
+    }
+    if (lc($opt_mode) eq "seq" and $opt_name ne "")
+    {
+        &write_message("Warning", "Input tDR name file ".$opt_name." is specified with sequence search mode. The file will be ignored.");
+    }
+    if (lc($opt_mode) eq "name" and $opt_seq ne "")
+    {
+        &write_message("Warning", "Input sequence file ".$opt_seq." is specified with tDR name search mode. The file will be ignored.");
+    }
+    if (lc($opt_mode) eq "seq" and $opt_seq ne "")
+    {
+        if (!-r $opt_seq)
+        {
+            &write_message("Error", "Fail to read sequence file ".$opt_seq);
+            $valid = 0;
+        }
+        if ($opt_seq !~ /\.fasta$/ and $opt_seq !~ /\.fasta.gz$/ and $opt_seq !~ /\.fa$/ and $opt_seq !~ /\.fa.gz$/ and
+            $opt_seq !~ /\.fastq$/ and $opt_seq !~ /\.fastq.gz$/ and $opt_seq !~ /\.fq$/ and $opt_seq !~ /\.fq.gz$/)
+        {
+            &write_message("Error", "Unsupported sequence file type for ".$opt_seq.". Sequence file must have extension as .fa, .fasta, .fq, .fastq, or gzip compressed format of the above.");
+            $valid = 0;
+        }
+    }
+    elsif (lc($opt_mode) eq "name")
+    {
+        if (!-r $opt_name)
+        {
+            &write_message("Error", "Fail to read tDR name file ".$opt_name);
+            $valid = 0;
+        }
+    }
+    if (!-r "$opt_db-tRNAgenome.fa")
+    {
+        &write_message("Error", "Fail to read reference database ".$opt_db);
+        $valid = 0;
+    }
+    elsif (!-r "$opt_db-dbinfo.txt")
+    {
+        &write_message("Error", "Fail to read reference database ".$opt_db);
+        $valid = 0;
+    }
+    if (($opt_minread <= 0 or int($opt_minread) != $opt_minread) and lc($opt_mode) eq "seq")
+    {
+        &write_message("Error", "Invalid minimum number of reads. Please specify positive integer with --minread option.");
+        $valid = 0;
+    }
+    if ((($opt_minlen != 0 and $opt_minlen <= 11) or int($opt_minlen) != $opt_minlen) and lc($opt_mode) eq "seq")
+    {
+        &write_message("Error", "Invalid minimum sequence length for tDRs. Please specify a length > 11 nt.");
+        $valid = 0;
+    }
+    if ((($opt_maxlen != 0 and ($opt_maxlen < 15 or $opt_maxlen > 100)) or int($opt_maxlen) != $opt_maxlen)
+        and lc($opt_mode) eq "seq")
+    {
+        &write_message("Error", "Invalid maximum sequence length for tDRs. Please specify a length between 15 nt and 100 nt.");
+        $valid = 0;
+    }
+    if ($opt_cores <= 0 or int($opt_cores) != $opt_cores)
+    {
+        &write_message("Error", "Invalid number of processing cores. Please specify positive integer with -c option.");
+        $valid = 0;
+    }
+
+    return $valid;
+}
+
+sub initialize_log
+{
+    my $log_file = $opt_output."_tDRnamer.log";
+    open ($log, ">$log_file") || die "FATAL: Fail to open log file $log_file\n";
+    print $log "tDRnamer $version ($release_date)\n";
+    print $log "User: ".getlogin."\n";
+    print $log "Run time: ".localtime."\n";
+    print $log "Command: ".&get_command_arguments()."\n\n";
+}
+
+sub get_command_arguments
+{
+    my $line = "tDRnamer";
+    
+    $line .= " --mode ".$opt_mode if ($opt_mode ne "");
+    $line .= " --seq ".$opt_seq if ($opt_seq ne "");
+    $line .= " --name ".$opt_name if ($opt_name ne "");
+    $line .= " --db ".$opt_db if ($opt_db ne "");
+    $line .= " --source ".$opt_source if ($opt_source ne "");
+    $line .= " --output ".$opt_output if ($opt_output ne "");
+    $line .= " --minread ".$opt_minread if (lc($opt_mode) eq "seq");
+    $line .= " --minlen ".$opt_minlen if (lc($opt_mode) eq "seq");
+    $line .= " --maxlen ".$opt_maxlen if (lc($opt_mode) eq "seq");
+	$line .= " --cores ".$opt_cores if ($opt_cores >= 1);
+    $line .= " --force" if ($opt_force);
+    
+    return $line;
+}
+
+sub close_log
+{
+    if (defined $log)
+    {
+        close($log);
+    }
+}
+
+sub write_message
+{
+    my ($label, $msg) = @_;
+    if ($label ne "")
+    {
+        print STDERR $label.": ".$msg."\n";
+        print $log $label.": ".$msg."\n";
+    }
+    else
+    {
+        print STDERR $msg."\n";
+        print $log $msg."\n";
+    }
+}
+
+sub write_exec_log
+{
+    my ($temp_log) = @_;
+    if (-s $temp_log > 0)
+    {
+        my $line + "";
+        open(FILE_IN, "$temp_log");
+        while ($line = <FILE_IN>)
+        {
+            print STDERR $line;
+            print $log $line;
+        }
+        close(FILE_IN);
+        print $log "\n";
+    }
+}
+
+sub get_script_path
+{
+    my $full_path = $0;
+    my $path = "";
+    if ($full_path =~ /\//)
+    {
+        $path = substr($full_path, 0, rindex($full_path, "/")+1);
+        if ($path eq "./")
+        {
+            $path = `pwd`;
+            chop($path);
+            $path .= "/";
+        }
+        elsif ($path eq "../")
+        {
+            $path = `pwd`;
+            chop($path);
+            $path = substr($path, 0, rindex($path, "/")+1);
+        }
+    }
+    else
+    {
+        $path = `pwd`;
+        chop($path);
+        $path .= "/";
+    }
+    return $path;
+}

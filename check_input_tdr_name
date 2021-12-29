@@ -1,0 +1,347 @@
+#!/usr/bin/perl -w
+# check_input_tdr_name
+# Check input tDR names for validity
+
+use strict;
+use Getopt::Long;
+
+our %aa_code = ('ALA'=>'A', 'ARG'=>'R', 'ASN'=>'N', 'ASP'=>'D', 'CYS'=>'C', 'GLU'=>'E', 'GLN'=>'Q',
+				'GLY'=>'G', 'HIS'=>'H', 'ILE'=>'I', 'LEU'=>'L', 'LYS'=>'K', 'MET'=>'M', 'PHE'=>'F',
+				'PRO'=>'P', 'SER'=>'S', 'THR'=>'T', 'TRP'=>'W', 'TYR'=>'Y', 'VAL'=>'V', 'SEC'=>'Z',
+				'UND'=>'U', 'IMET'=>'X', 'SUP'=>'*');
+
+our %aa_list = (
+		   'AGC'=>'Ala', 'GGC'=>'Ala', 'CGC'=>'Ala', 'TGC'=>'Ala',
+		   'ACC'=>'Gly', 'GCC'=>'Gly', 'CCC'=>'Gly', 'TCC'=>'Gly',
+		   'AGG'=>'Pro', 'GGG'=>'Pro', 'CGG'=>'Pro', 'TGG'=>'Pro',
+		   'AGT'=>'Thr', 'GGT'=>'Thr', 'CGT'=>'Thr', 'TGT'=>'Thr',
+		   'AAC'=>'Val', 'GAC'=>'Val', 'CAC'=>'Val', 'TAC'=>'Val',
+		   
+		   'AGA'=>'Ser', 'GGA'=>'Ser', 'CGA'=>'Ser', 'TGA'=>'Ser', 'ACT'=>'Ser', 'GCT'=>'Ser',
+		   'ACG'=>'Arg', 'GCG'=>'Arg', 'CCG'=>'Arg', 'TCG'=>'Arg', 'CCT'=>'Arg', 'TCT'=>'Arg',
+		   'AAG'=>'Leu', 'GAG'=>'Leu', 'CAG'=>'Leu', 'TAG'=>'Leu', 'CAA'=>'Leu', 'TAA'=>'Leu',
+		   
+		   'AAA'=>'Phe', 'GAA'=>'Phe',
+		   
+		   'ATT'=>'Asn', 'GTT'=>'Asn',
+		   'CTT'=>'Lys', 'TTT'=>'Lys',
+		   
+		   'ATC'=>'Asp', 'GTC'=>'Asp',
+		   'CTC'=>'Glu', 'TTC'=>'Glu',
+		   
+		   'ATG'=>'His', 'GTG'=>'His',
+		   'CTG'=>'Gln', 'TTG'=>'Gln',
+		   
+		   'ATA'=>'Tyr', 'GTA'=>'Tyr',
+		   'CTA'=>'Sup', 'TTA'=>'Sup',
+		   
+		   'AAT'=>'Ile', 'GAT'=>'Ile', 'TAT'=>'Ile',
+		   'CAT'=>'Met',
+		   
+		   'ACA'=>'Cys', 'GCA'=>'Cys',
+		   'CCA'=>'Trp',
+		   'TCA'=>'SeC',
+		   'NNN'=>'Undet'
+		   );
+
+our %sprinzl_pos = ('1'=>1,'2'=>2,'3'=>3,'4'=>4,'5'=>5,'6'=>6,'7'=>7,'8'=>8,'9'=>9,'10'=>10,'11'=>11,'12'=>12,'13'=>13,'14'=>14,'15'=>15,'16'=>16,
+				'17'=>17,'17a'=>18,'18'=>19,'19'=>20,'20'=>21,'20a'=>22,'20b'=>23,'21'=>24,'22'=>25,'23'=>26,'24'=>27,'25'=>28,
+				'26'=>29,'27'=>30,'28'=>31,'29'=>32,'30'=>33,'31'=>34,'32'=>35,'33'=>36,'34'=>37,'35'=>38,'36'=>39,'37'=>40,'38'=>41,
+				'39'=>42,'40'=>43,'41'=>44,'42'=>45,'43'=>46,'44'=>47,'45'=>48,
+				'e11'=>49,'e12'=>50,'e13'=>51,'e14'=>52,'e15'=>53,'e16'=>54,'e17'=>55,
+				'e1'=>56,'e2'=>57,'e3'=>58,'e4'=>59,'e5'=>60,
+				'e27'=>61,'e26'=>62,'e25'=>63,'e24'=>64,'e23'=>65,'e22'=>66,'e21'=>67,
+				'46'=>68,'47'=>69,'48'=>70,'49'=>71,'50'=>72,'51'=>73,'52'=>74,'53'=>75,'54'=>76,'55'=>77,'56'=>78,'57'=>79,'58'=>80,
+				'59'=>81,'60'=>82,'61'=>83,'62'=>84,'63'=>85,'64'=>86,'65'=>87,'66'=>88,'67'=>89,'68'=>90,'69'=>91,'70'=>92,'71'=>93,
+				'72'=>94,'73'=>95,'74'=>95,'75'=>96,'76'=>97);
+
+our ($opt_name, $opt_filter, $opt_precursor, $opt_help);
+
+&set_options();
+&parse_names();
+
+exit;
+
+
+sub set_options
+{
+	$opt_name = "";
+	$opt_filter = "";
+	$opt_precursor = 0;
+	
+	Getopt::Long::GetOptions("name=s", "filter=s", "precursor", "help|h");
+	
+	if ($opt_help || $opt_name eq "")
+	{
+		die "Usage: check_input_tdr_name [options] > <log file>\n",
+			"Options\n",
+			"--name=<file name>      File name containing fragment names\n",
+			"--filter=<file name>    Output file name with invalid entries filtered (optional)\n",
+			"--precursor             Include tDRs derived from pre-tRNAs\n",
+			"--help -h               Print this help\n\n";
+	}
+}
+
+sub parse_names
+{
+	my $seq_name = "";
+	my $line = "";
+	my $ct = 0;
+	my @invalid_counts = (0,0);
+	my $valid = 1;
+	my $output = 0;
+	my $filtered_count = 0;
+	
+	if ($opt_filter ne "")
+	{
+		open(FILE_OUT, ">$opt_filter") or die "Fail to open $opt_filter\n";
+		$output = 1;
+	}	
+	open(FILE_IN, "$opt_name") or die "Fail to open $opt_name\n";
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if ($line =~ /^#/ or $line eq "" or &trim($line) eq "")
+		{}
+		else
+		{
+			$ct++;
+			$valid = &check_name($ct, $line, \@invalid_counts);
+			if ($valid and $output)
+			{
+				print FILE_OUT $line."\n";
+				$filtered_count++;
+			}
+		}
+	}
+	close(FILE_IN);
+	if ($output)
+	{
+		close(FILE_OUT);
+	}
+	
+	print "Total number of tDR names: ".$ct."\n";
+	print "tDR name with invalid characters: ".$invalid_counts[0]."\n";
+	print "tDR name with invalid format: ".$invalid_counts[1]."\n";
+	if ($output)
+	{
+		print "Total number of tDR names after filtering: ".$filtered_count."\n";
+	}
+}
+
+sub check_name
+{
+	my ($ct, $query_name, $invalid_counts) = @_;
+	my $valid = 1;
+
+	my $trim_name = &trim($query_name);
+	my $min_length = 15;
+	my $type = "tRNA";
+	
+	if ($trim_name !~ /^[\w\-\:]+$/)
+	{
+		print "Entry ".$ct.": tDR name ".$trim_name." contains invalid character(s).\n";
+		$invalid_counts->[0] += 1;
+		$valid = 0;
+	}
+	else
+	{
+		my @parts = split(/\-/, $trim_name);
+		if (scalar(@parts) < 5)
+		{
+			print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=1).\n";
+			$invalid_counts->[1] += 1;
+			$valid = 0;
+		}
+		else
+		{
+			my $skip = 0;
+			my (@pos) = split(/\:/, uc($parts[1]));
+			if (scalar(@pos) != 2)
+			{
+				print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=2).\n";
+				$invalid_counts->[1] += 1;
+				$skip = 1;
+				$valid = 0;
+			}
+			else
+			{
+				for (my $i = 0; $i < scalar(@pos); $i++)
+				{
+					if ((uc($pos[$i]) !~ /^[0-9EAB]+$/ and uc($pos[$i]) !~ /^[0-9EAB]+I\d+$/ and !$opt_precursor) or
+						($pos[$i] !~ /^L\d+$/ and $pos[$i] !~ /^T\d+$/ and uc($pos[$i]) !~ /^[0-9EAB]+$/ and
+						$pos[$i] !~ /^L\d+I\d+$/ and $pos[$i] !~ /^T\d+I\d+$/ and uc($pos[$i]) !~ /^[0-9EAB]+I\d+$/ and $opt_precursor))
+					{
+						print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=3).\n";
+						$invalid_counts->[1] += 1;
+						$valid = 0;
+						$skip = 1;
+						last;
+					}
+				}
+				if (!$skip)
+				{
+					my $start = -1;
+					my $end = -1;
+					if ($pos[0] =~ /^L(\d+)/)
+					{
+						$start = $1;
+						$type = "pre-tRNA";
+						if ($start == 1 and uc($parts[2]) eq "HIS")
+						{
+							$type = "tRNA";
+						}
+						if ($pos[1] =~ /^L(\d+)/)
+						{
+							$end = $1;
+							if (($start + $min_length - 1) > $end)
+							{
+								print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=4).\n";
+								$invalid_counts->[1] += 1;
+								$valid = 0;
+								$skip = 1;
+							}
+						}
+					}
+					elsif ($pos[0] =~ /^T(\d+)/)
+					{
+						$start = $1;
+						$type = "pre-tRNA";
+						if ($pos[1] =~ /^L\d+/)
+						{
+							print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=5).\n";
+							$invalid_counts->[1] += 1;
+							$valid = 0;
+							$skip = 1;
+						}
+						elsif ($pos[1] =~ /^T(\d+)/)
+						{
+							$end = $1;
+							if (($start + $min_length - 1) > $end)
+							{
+								print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=6).\n";
+								$invalid_counts->[1] += 1;
+								$valid = 0;
+								$skip = 1;
+							}
+						}
+						else
+						{
+							print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=7).\n";
+							$invalid_counts->[1] += 1;
+							$valid = 0;
+							$skip = 1;
+						}
+					}
+					elsif ($pos[0] =~ /^([0-9EAB]+)$/ or $pos[0] =~ /^([0-9EAB]+)I\d+$/)
+					{
+						$start = lc($1);
+						if ($pos[1] =~ /^L\d+/)
+						{
+							print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=8).\n";
+							$invalid_counts->[1] += 1;
+							$valid = 0;
+							$skip = 1;
+						}
+						elsif ($pos[1] =~ /^([0-9EAB]+)$/ or $pos[1] =~ /^([0-9EAB]+)I\d+$/)
+						{
+							$end = lc($1);
+							if (!defined $sprinzl_pos{$start} or !defined $sprinzl_pos{$end})
+							{
+								print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=9).\n";
+								$invalid_counts->[1] += 1;
+								$valid = 0;
+								$skip = 1;
+							}
+							elsif (($sprinzl_pos{$start} + $min_length - 1) >= $sprinzl_pos{$end})
+							{
+								print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=10).\n";
+								$invalid_counts->[1] += 1;
+								$valid = 0;
+								$skip = 1;
+							}
+						}
+						elsif ($pos[1] =~ /^T\d+/)
+						{
+							$type = "pre-tRNA";
+						}
+					}
+				}
+			}
+			if (!$skip)
+			{
+				if (lc($parts[0]) ne lc("tDR"))
+				{
+					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=11).\n";
+					$invalid_counts->[1] += 1;
+					$valid = 0;
+				}
+				elsif (!defined($aa_code{uc($parts[2])}))
+				{
+					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=12).\n";
+					$invalid_counts->[1] += 1;
+					$valid = 0;
+				}
+				elsif (!defined($aa_list{uc($parts[3])}))
+				{
+					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=13).\n";
+					$invalid_counts->[1] += 1;
+					$valid = 0;
+				}
+				elsif ($parts[4] !~ /^\d+$/)
+				{
+					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=14).\n";
+					$invalid_counts->[1] += 1;
+					$valid = 0;
+				}
+				elsif (scalar(@parts) > 5)
+				{
+					for (my $i = 5; $i < scalar(@parts); $i++)
+					{
+						if ($i == 5 and $type eq "pre-tRNA" and $parts[$i] !~ /^\d+$/)
+						{
+							print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=15).\n";
+							$invalid_counts->[1] += 1;
+							$valid = 0;
+							last;
+						}
+						elsif (($i == 5) and (uc($parts[$i]) =~ /^M\d+$/ or uc($parts[$i]) =~ /^[ACGTUDI]\d+[ACGTU]+$/ or $parts[$i] =~ /^\d+$/)) {}
+						elsif (($i == 6) and (uc($parts[$i]) =~ /^M\d+$/ or uc($parts[$i]) =~ /^[ACGTUDI]\d+[ACGTU]+$/)) {}
+						elsif (($i > 6) and (uc($parts[$i]) =~ /^[ACGTUDI]\d+[ACGTU]+$/)) {}
+						else
+						{
+							print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=16).\n";
+							$invalid_counts->[1] += 1;
+							$valid = 0;
+							last;
+						}
+					}
+					if ((uc($parts[5]) =~ /^M\d+$/ and scalar(@parts) > 9) or
+						(uc($parts[5]) =~ /^[ACGTUDI]\d+[ACGTU]+$/ and scalar(@parts) > 8) or 
+						(scalar(@parts) > 10 and uc($parts[6]) =~ /^M\d+$/) or 
+						($parts[5] =~ /^\d+$/ and scalar(@parts) > 10))
+					{
+						print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid. Only up to 3 mismatches or indels are allowed (code=17).\n";
+						$invalid_counts->[1] += 1;
+						$valid = 0;
+					}
+				}
+				elsif (scalar(@parts) == 5 and $type eq "pre-tRNA")
+				{
+					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=18).\n";
+					$invalid_counts->[1] += 1;
+					$valid = 0;
+				}
+			}
+		}
+	}
+
+	return $valid;
+}
+
+sub trim
+{
+	my ($value) = @_;
+	$value =~ s/\ //g;
+	return $value;
+}

@@ -1,0 +1,1092 @@
+#! /usr/bin/perl
+#
+# ------------------------------------------------------------------------------
+# create_tDRnamer_db: Build tDRnamer reference database
+#
+# Copyright (C) 2021-Present Andrew D. Holmes, Patricia P. Chan and Todd M. Lowe 
+#
+# Department of Biomolecular Engineering, Baskin School of Engineering
+# University of California Santa Cruz
+# Santa Cruz, CA 95064
+#
+# trna@soe.ucsc.edu
+# http://trna.ucsc.edu/
+# ------------------------------------------------------------------------------
+#
+
+use strict;
+use Getopt::Long;
+
+our $version = "1.0.0"; 
+our $release_date = "Dec 2021";
+our $program_id = "create_tDRnamer_db ".$version;
+
+our ($opt_genome, $opt_namemap, $opt_db, $opt_source, $opt_trna, $opt_ss, $opt_skipfilter, $opt_score, $opt_isoscore, $opt_force, $opt_help);
+our $log = undef;
+our $script_path = "";
+
+&set_options();
+$script_path = &get_script_path();
+&initialize_log();
+if (&check_options())
+{
+    if ($opt_force or (!-r "$opt_db-tRNAgenome.fa" and !-r "$opt_db-dbinfo.txt" and !-r "$opt_db-trnaalign.stk"))
+    {
+        if (lc($opt_source) eq "euk")
+        {
+            &create_euk_db();
+        }
+        else
+        {
+            &create_prok_db();
+        }
+    }
+    else
+    {
+        &write_message("Error", "Output files already exist. Please use --force option to overwrite them."); 
+    }
+}
+
+&close_log();
+
+exit;
+
+sub create_euk_db
+{
+    my ($total_count, $keep_count, $filtered_tRNA_file, $tRNAs);
+    if (!$opt_skipfilter)
+    {
+        my $high_confidence = &check_high_confidence_flag();
+        ($total_count, $keep_count, $filtered_tRNA_file, $tRNAs) = &filter_tRNAs($high_confidence);
+        &write_message("", $keep_count." out of ".$total_count." tRNAs are kept after filtering.");
+        if ($keep_count == $total_count)
+        {
+            system("rm ".$filtered_tRNA_file);
+            $filtered_tRNA_file = $opt_trna;
+        }
+    }
+    else
+    {
+        $filtered_tRNA_file = $opt_trna;
+    }
+    my $result = &run_maketdrdb($filtered_tRNA_file, 0);
+    if ($result)
+    {
+        &write_message("Status", "Complete creating tDRnamer database");
+    }
+    else
+    {
+        &write_message("Error", "Fail to creeate tDRnamer database");
+    }
+}
+
+sub create_prok_db
+{
+    my ($total_count, $keep_count, $filtered_tRNA_file, $tRNAs);
+    if (!$opt_skipfilter)
+    {
+        ($total_count, $keep_count, $filtered_tRNA_file, $tRNAs) = &filter_tRNAs(0);
+        &write_message("", $keep_count." out of ".$total_count." tRNAs are kept after filtering.");
+        if ($keep_count == $total_count)
+        {
+            system("rm ".$filtered_tRNA_file);
+            $filtered_tRNA_file = $opt_trna;
+        }
+    }
+    else
+    {
+        @$tRNAs = ();
+        $filtered_tRNA_file = $opt_trna;
+    }
+    my ($sorted_tRNAs, $add_cca) = &read_ss($tRNAs);
+    my $force_cca = 0;
+    if (scalar(@$sorted_tRNAs) > 0 and scalar(@$sorted_tRNAs) == scalar(@$add_cca))
+    {
+        $force_cca = 1;
+    }
+    my $result = &run_maketdrdb($filtered_tRNA_file, $force_cca);
+    if ($result)
+    {
+        if (!$force_cca and scalar(@$add_cca) > 0)
+        {
+            my $name_map = &read_name_map();
+            my $mature_tRNA_ids = &get_mature_tRNA_id($add_cca, $name_map);
+            &update_mature_tRNAs_fasta($mature_tRNA_ids, $opt_db."-maturetRNAs.fa");
+            &update_mature_tRNAs_bed($mature_tRNA_ids, $opt_db."-maturetRNAs.bed");
+            $result = &update_alignments($mature_tRNA_ids, $opt_db."-trnaalign.stk");
+            if ($result)
+            {
+                $result = &update_alignments($mature_tRNA_ids, $opt_db."-trnaconvert.stk");
+            }
+            if ($result)
+            {
+                &update_mature_tRNAs_fasta($mature_tRNA_ids, $opt_db."-tRNAgenome.fa");
+                if (&update_fasta_index($opt_db."-tRNAgenome.fa"))
+                {
+                    if (&update_bowtie2_index($opt_db."-tRNAgenome.fa"))
+                    {
+                        &cleanup_old_files();
+                        &write_message("Status", "Complete creating tDRnamer database");
+                    }
+                }
+            }
+        }
+        else
+        {
+            &write_message("Status", "Complete creating tDRnamer database");
+        }
+    }
+    else
+    {
+        &write_message("Error", "Fail to build tDRnamer database and index");
+    }
+}
+
+sub run_maketdrdb
+{
+    my ($trna_file, $force_cca) = @_;
+    my $temp_log = $opt_db."-makedb-run$$.log";
+    my $result = 1;
+
+    my $cmd = $script_path."maketdrdb.py --databasename ".$opt_db." --genomefile ".$opt_genome." --trnascanfile ".$trna_file.
+        " --namemap ".$opt_namemap." --orgmode ".lc($opt_source);
+    if ($force_cca)
+    {
+        $cmd .= " --forcecca";
+    }
+    $cmd .= " >".$temp_log." 2>&1";
+    &write_message("Status", "Building database and index");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r "$opt_db-tRNAgenome.fa" and -r "$opt_db-tRNAgenome.4.bt2" and -r "$opt_db-tRNAgenome.rev.2.bt2" 
+        and -r "$opt_db-dbinfo.txt" and -r "$opt_db-trnaalign.stk")
+    {}
+    else
+    {
+        $result = 0;
+    }
+
+    return $result;
+}
+
+sub update_mature_tRNAs_fasta
+{
+    my ($mature_tRNA_ids, $fasta_file) = @_;
+    my $orig_fasta_file = $fasta_file.".orig";
+    my $line = "";
+    my $index = -1;
+
+    &write_message("Status", "Adding CCA to mature tRNAs in ".$fasta_file);
+
+    my $cmd = "mv ".$fasta_file." ".$orig_fasta_file;
+    system($cmd);
+
+    open (FILE_OUT, ">$fasta_file") || die "Fail to open $fasta_file\n";
+    open (FILE_IN, "$orig_fasta_file") || die "Fail to open $orig_fasta_file\n";
+    while ($line = <FILE_IN>)
+    {
+        chomp($line);
+        if ($line =~ /^>(\S+)/)
+        {
+            $index = &bsearch_tRNAscanid($1, $mature_tRNA_ids);
+            if ($index == -1)
+            {
+                print FILE_OUT $line."\n";
+                $line = <FILE_IN>;
+                print FILE_OUT $line;
+            }
+            else
+            {
+                print FILE_OUT $line."\n";
+                $line = <FILE_IN>;
+                chomp($line);
+                print FILE_OUT substr($line, 0, length($line)-20)."CCA".substr($line, length($line)-20)."\n";
+            }
+        }
+    }
+    close (FILE_IN);
+    close (FILE_OUT);
+}
+
+sub update_mature_tRNAs_bed
+{
+    my ($mature_tRNA_ids, $bed_file) = @_;
+    my $orig_bed_file = $bed_file.".orig";
+    my $line = "";
+    my @columns = ();
+    my $index = -1;
+
+    &write_message("Status", "Adding CCA to mature tRNAs in ".$bed_file);
+
+    my $cmd = "mv ".$bed_file." ".$orig_bed_file;
+    system($cmd);
+
+    open (FILE_OUT, ">$bed_file") || die "Fail to open $bed_file\n";
+    open (FILE_IN, "$orig_bed_file") || die "Fail to open $orig_bed_file\n";
+    while ($line = <FILE_IN>)
+    {
+        @columns = split(/\t/, $line);
+        $index = &bsearch_tRNAscanid($columns[0], $mature_tRNA_ids);
+        if ($index == -1)
+        {
+            print FILE_OUT $line;
+        }
+        else
+        {
+            print FILE_OUT $columns[0]."\t".$columns[1]."\t".($columns[2]+3)."\t".
+                $columns[3]."\t".$columns[4]."\t".$columns[5];
+        }
+    }
+    close (FILE_IN);
+    close (FILE_OUT);
+}
+
+sub update_alignments
+{
+    my ($mature_tRNA_ids, $stockholm_file) = @_;
+    my $orig_stockholm_file = $stockholm_file.".orig";
+    my $line = "";
+    my $index = -1;
+    my $id = "";
+    my $result = 1;
+
+    &write_message("Status", "Adding CCA to mature tRNA alignments in ".$stockholm_file);
+
+    my $cmd = "mv ".$stockholm_file." ".$orig_stockholm_file;
+    system($cmd);
+
+    $cmd = "grep \"#=GC \" ".$orig_stockholm_file;
+    my @lines = split(/\n/, `$cmd`);
+    my @cca_pos = ();
+    if ($lines[scalar(@lines)-1] =~ /^#=GC RF \s+ \S+$/)
+    {
+        my $rf = $lines[scalar(@lines)-1];
+        for (my $i = length($rf)-1; $i >= 0; $i--)
+        {
+            if (substr($rf, $i, 1) eq "*")
+            {
+                unshift(@cca_pos, $i);
+            }
+            elsif (substr($rf, $i, 1) eq "+")
+            {
+                last;
+            }
+        }
+    }
+    if (scalar(@cca_pos) != 3)
+    {
+        $result = 0;
+        &write_message("Error", "Fail to locate CCA position in alignments");
+    }
+    if ($result and ($lines[scalar(@lines)-2] =~ /^#=GC SS_cons \s+ \S+$/))
+    {
+        my $cons = $lines[scalar(@lines)-2];
+        for (my $i = 0; $i < scalar(@cca_pos); $i++)
+        {
+            if (substr($cons, $cca_pos[$i], 1) ne ":")
+            {
+                $result = 0;
+                &write_message("Error", "Fail to locate CCA position in alignments");
+            }
+        }
+    }
+
+    if ($result)
+    {
+        open (FILE_OUT, ">$stockholm_file") || die "Fail to open $stockholm_file\n";
+        open (FILE_IN, "$orig_stockholm_file") || die "Fail to open $orig_stockholm_file\n";
+        while ($line = <FILE_IN>)
+        {
+            chomp($line);
+            if ($line =~ /^(tRNA-\S+)\s+\S+$/)
+            {
+                $id = $1;
+                $index = &bsearch_tRNAscanid($id, $mature_tRNA_ids);
+                if ($index > -1)
+                {
+                    for (my $i = 0; $i < scalar(@cca_pos); $i++)
+                    {
+                        if ($i == 0 or $i == 1)
+                        {
+                            substr($line, $cca_pos[$i], 1) = "C";
+                        }
+                        elsif ($i == 2)
+                        {
+                            substr($line, $cca_pos[$i], 1) = "A";
+                        }
+                    }
+                }
+            }
+            elsif ($line =~ /^#=GR (tRNA-\S+)\s+PP\s+\S+$/)
+            {
+                if ($id eq $1)
+                {
+                    for (my $i = 0; $i < scalar(@cca_pos); $i++)
+                    {
+                        substr($line, $cca_pos[$i], 1) = "*";
+                    }
+                }
+                $id = "";
+            }
+            print FILE_OUT $line."\n";
+        }
+        close (FILE_IN);
+        close (FILE_OUT);
+    }
+
+    return $result;
+}
+
+sub update_fasta_index
+{
+    my ($fasta_file) = @_;
+    my $result = 0;
+    my $fai_file = $fasta_file.".fai";
+    my $orig_fai_file = $fasta_file.".fai.orig";
+
+    my $cmd = "mv ".$fai_file." ".$orig_fai_file;
+    system($cmd);
+
+    $cmd = "samtools faidx ".$fasta_file;
+    &write_message("Status", "Updating genome index");
+    system($cmd);
+
+    if (-r "$fai_file")
+    {
+        $result = 1;
+    }
+    else
+    {
+        &write_message("Error", "Fail to update genome index");
+    }
+    return $result;
+}
+
+sub update_bowtie2_index
+{
+    my ($fasta_file) = @_;
+    my $temp_log = $opt_db."-makedb-run$$.log";
+    my $result = 0;
+
+    my $cmd = "bowtie2-build ".$fasta_file." ".$opt_db."-tRNAgenome";
+    $cmd .= " >".$temp_log." 2>&1";
+    &write_message("Status", "Updating bowtie2 index");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r "$opt_db-tRNAgenome.4.bt2" and -r "$opt_db-tRNAgenome.rev.2.bt2")
+    {
+        $result = 1;
+    }
+    else
+    {
+        &write_message("Error", "Fail to update bowtie2 index");
+    }
+    return $result;
+}
+
+sub cleanup_old_files
+{
+    my $file = $opt_db."-maturetRNAs.fa.orig";
+    system("rm ".$file);
+    $file = $opt_db."-maturetRNAs.bed.orig";
+    system("rm ".$file);
+    $file = $opt_db."-tRNAgenome.fa.orig";
+    system("rm ".$file);
+    $file = $opt_db."-tRNAgenome.fa.fai.orig";
+    system("rm ".$file);
+    $file = $opt_db."-trnaalign.stk.orig";
+    system("rm ".$file);
+    $file = $opt_db."-trnaconvert.stk.orig";
+    system("rm ".$file);
+}
+
+sub check_high_confidence_flag
+{
+    my $high_confidence = 0;
+    my $cmd = "grep \"high confidence\" \"".$opt_trna."\" | wc -l";
+    my @result = split(/\n/, `$cmd`);
+    if (scalar(@result) > 0)
+    {
+        if (int($result[0]) > 0)
+        {
+            $high_confidence = 1;
+        }
+    }
+    return $high_confidence;
+}
+
+sub filter_tRNAs
+{
+    my ($high_confidence) = @_;
+    my $filtered_tRNA_file = $opt_db."-filtered-tRNAs.out";
+	
+	my $line = "";
+	my %header = ();
+	my @columns = ();
+    my $total = 0;
+    my $keep_count = 0;
+    my $keep = 0;
+	my @tRNAs = ();  
+	
+    &write_message("Status", "Filtering tRNAs in ".$opt_trna);
+	
+    open(FILE_OUT, ">$filtered_tRNA_file") || die "Fail to open $filtered_tRNA_file\n";
+	open(FILE_IN, "$opt_trna") or die "Fail to open $opt_trna\n";	
+	while ($line = <FILE_IN>)
+	{		
+		chomp($line);
+		if ($line =~ /^Name/)
+		{
+			$line =~ s/tRNA #/tRNA#/;
+		}
+		if ($line =~ /^Sequence/)
+		{
+			$line =~ s/Intron Bounds/Intron\tBound/;
+		}
+
+		@columns = split(/\t/, $line, -1);
+		for (my $i = 0; $i < scalar(@columns); $i++)
+		{
+			$columns[$i] = &trim($columns[$i]);
+		}
+
+		if ($columns[0] =~ /^Sequence/ || $columns[0] =~ /^Name/ || $columns[0] =~ /^-----/)
+		{
+			&get_results_header(\@columns, \%header);
+            print FILE_OUT $line."\n";
+		}
+		else
+		{
+            $total++;
+            $keep = 1;
+            my $note = $columns[$header{note}];
+            if ($columns[$header{isotype}] eq "Undet" or $columns[$header{isotype}] eq "Sup" or 
+                $note =~ /trunc_/ or index($note, "pseudo") > -1)
+            {
+                $keep = 0;
+            }
+            if ($high_confidence)
+            {
+                if ($keep and index($note, "isotype mismatch") > -1)
+                {
+                    $keep = 1;
+                }
+                elsif (index($note, "high confidence") > -1)
+                {
+                    $keep = 1;
+                }
+                elsif ($keep and index($note, "unexpected anticodon") > -1)
+                {
+                    $keep = 1;
+                }
+                elsif ($keep and index($note, "secondary filtered") > -1)
+                {
+                    if ($columns[$header{score}] < $opt_score or $columns[$header{isotype_score}] < $opt_isoscore or index($note, "IPD") > -1)
+                    {
+                        $keep = 0;
+                    }
+                }
+                elsif ($keep and index($note, "tertiary filtered") > -1)
+                {
+                    if ($columns[$header{score}] < $opt_score or $columns[$header{isotype_score}] < $opt_isoscore or index($note, "IPD") > -1)
+                    {
+                        $keep = 0;
+                    }
+                }
+            }
+            elsif ($keep and ($columns[$header{score}] < 55 and ($columns[$header{ss_score}] < 5 or $columns[$header{hmm_score}] < 10)))
+            {
+                $keep = 0;
+            }
+
+            if ($keep)
+            {
+                my $tRNAscanid = $columns[$header{seqname}].".trna".$columns[$header{trna_id}];
+                push(@tRNAs, $tRNAscanid);
+                print FILE_OUT $line."\n";
+                $keep_count++;
+            }
+		}
+	}
+	
+	close(FILE_IN);
+    close(FILE_OUT);
+	
+	return ($total, $keep_count, $filtered_tRNA_file, \@tRNAs);
+}
+
+sub get_results_header
+{
+	my ($columns, $header) = @_;
+	
+	if ($columns->[0] =~ /^Sequence/)
+	{
+		for (my $i = 0; $i < scalar(@$columns); $i++)
+		{
+			if ($columns->[$i] eq "Sequence")
+			{
+				$header->{seqname} = $i;
+			}
+			elsif ($columns->[$i] eq "Anti")
+			{
+				$header->{anticodon} = $i;
+			}
+			elsif ($columns->[$i] eq "Intron")
+			{
+				$header->{intron_start} = $i;
+				$header->{intron_end} = $i+1;
+			}
+			elsif ($columns->[$i] eq "Inf")
+			{
+				$header->{score} = $i;
+			}
+			elsif ($columns->[$i] eq "Cove")
+			{
+				$header->{score} = $i;
+			}
+			elsif ($columns->[$i] eq "HMM")
+			{
+				$header->{hmm_score} = $i;
+			}
+			elsif ($columns->[$i] eq "2'Str")
+			{
+				$header->{ss_score} = $i;
+			}
+			elsif ($columns->[$i] eq "Hit")
+			{
+				$header->{hit_origin} = $i;
+			}
+			elsif ($columns->[$i] eq "HMM")
+			{
+				$header->{hmm_score} = $i;
+			}
+			elsif ($columns->[$i] eq "Type")
+			{
+				$header->{isotype_type} = $i;
+			}
+		}
+	}
+	elsif ($columns->[0] =~ /^Name/)
+	{
+		for (my $i = 0; $i < scalar(@$columns); $i++)
+		{
+			if ($columns->[$i] eq "tRNA#")
+			{
+				$header->{trna_id} = $i;
+			}
+			elsif ($columns->[$i] eq "Begin" and !defined $header->{start})
+			{
+				$header->{start} = $i;
+				$header->{end} = $i+1;
+			}
+			elsif ($columns->[$i] eq "Type")
+			{
+				$header->{isotype} = $i;
+			}
+			elsif ($columns->[$i] eq "CM")
+			{
+				$header->{isotype_cm} = $i;
+				$header->{isotype_score} = $i+1;
+			}
+			elsif ($columns->[$i] eq "Note")
+			{
+				$header->{note} = $i;
+			}
+			elsif ($columns->[$i] eq "Count")
+			{
+				$header->{intron_count} = $i;
+			}
+		}
+	}
+}
+
+sub trim
+{
+	my $string = shift;
+	$string =~ s/^\s+//;
+	$string =~ s/\s+$//;
+	return $string;
+}
+
+sub read_ss
+{
+    my ($keep_tRNAs) = @_;
+    my @sorted_tRNAs = ();
+	my @add_cca = ();
+	my $tRNA = {};
+	my $introns = [];
+	my $intron = {};
+    my $include = 0;
+	my $line = "";
+	
+    &write_message("Status", "Checking genomically encoded CCA in ".$opt_ss);
+
+    if (scalar(@$keep_tRNAs) > 0)
+    {
+        @sorted_tRNAs = sort @$keep_tRNAs;
+    }
+
+	open(SSFILE, $opt_ss) || die "Fail to open $opt_ss\n";	
+	while ($line = <SSFILE>)
+	{
+		if ($line =~ /^(\S+)\s+\((\S+)\)\s+Length:\s(\d+)\sbp/)
+		{
+			if (defined $tRNA->{seq_name})
+			{
+				$tRNA = &set_mature_tRNA($tRNA);
+                if (scalar(@sorted_tRNAs) == 0)
+                {
+                    push(@$keep_tRNAs, $tRNA->{tRNAscanid});
+                    $include = 1;
+                }
+                else
+                {
+                    my $index = &bsearch_tRNAscanid($tRNA->{tRNAscanid}, \@sorted_tRNAs);
+                    if ($index > -1)
+                    {
+                        $include = 1;
+                    }
+                }
+                if ($include and !&has_cca($tRNA))
+                {
+                    push(@add_cca, $tRNA->{tRNAscanid});
+                }
+			}
+            $include = 0;
+			$tRNA = {};
+			$tRNA->{seq_name} = $1;
+			$introns = [];
+			$tRNA->{introns} = $introns;
+			$tRNA->{tRNAscanid} = $tRNA->{seq_name};
+		}
+		elsif ($line =~ /^Type:\s(\S+)\s+Anticodon:\s(\S+)\sat\s(\d+-\d+).+Score:\s(\S+)/)
+		{
+			$tRNA->{isotype} = $1;			
+			$tRNA->{ac} = $2;
+
+			my $frag = index($tRNA->{isotype}, "-exon");
+			if ($frag > -1)
+			{
+				$tRNA->isotype(substr($tRNA->{isotype}, 0, $frag));
+			}
+				
+			if ($tRNA->{ac} eq "???")
+			{
+				$tRNA->{ac} = "NNN";
+			}
+		}
+		elsif ($line =~ /^Possible intron: (\d+)-(\d+)/)
+		{
+			$intron = {};
+			$intron->{start} = $1;
+			$intron->{end} = $2;
+			push (@{$tRNA->{introns}}, $intron);
+		}
+		elsif ($line =~ /^Seq:\s(\S+)$/)
+		{
+			$tRNA->{seq} = $1;
+		}
+		elsif ($line =~ /^Str:\s(\S+)$/)
+		{
+			$tRNA->{ss} = $1;
+		}
+		elsif ($line =~ /^Pre:\s(\S+)$/)
+		{
+			$tRNA->{pre} = $1;
+			$tRNA->{pre} =~ s/[\[\]]//g;
+			$tRNA->{mat} = $tRNA->{seq};
+			$tRNA->{mat_ss} = $tRNA->{ss};
+		}
+		elsif ($line =~ /^BHB:\s(\S+)$/)
+		{
+			$tRNA->{pre} = $1;
+			$tRNA->{pre} =~ s/[\[\]]//g;
+		}
+	}
+	if (defined $tRNA->{seq_name})
+	{
+        $tRNA = &set_mature_tRNA($tRNA);
+        if (scalar(@sorted_tRNAs) == 0)
+        {
+            push(@$keep_tRNAs, $tRNA->{tRNAscanid});
+            $include = 1;
+        }
+        else
+        {
+            my $index = &bsearch_tRNAscanid($tRNA->{tRNAscanid}, \@sorted_tRNAs);
+            if ($index > -1)
+            {
+                $include = 1;
+            }
+        }
+        if ($include and !&has_cca($tRNA))
+        {
+            push(@add_cca, $tRNA->{tRNAscanid});
+        }
+	}
+	
+	close(SSFILE);
+
+    if (scalar(@$keep_tRNAs) > 0 and scalar(@sorted_tRNAs) == 0)
+    {
+        @sorted_tRNAs = sort @$keep_tRNAs;
+    }
+    my @sorted_add_cca = sort @add_cca;
+	
+	return (\@sorted_tRNAs, \@sorted_add_cca);
+}
+
+sub set_mature_tRNA
+{
+	my ($tRNA) = @_;
+
+	if (!defined $tRNA->{pre})
+	{
+		$tRNA->{pre} = $tRNA->{seq};
+	}
+	if (!defined $tRNA->{mat})
+	{
+		if (scalar(@{$tRNA->{introns}}) == 0)
+		{
+			$tRNA->{mat} = $tRNA->{seq};			
+			$tRNA->{mat_ss} = $tRNA->{ss};			
+		}
+		else
+		{
+			for (my $i = 0; $i < scalar(@{$tRNA->{introns}}); $i++)
+			{
+				if ($i == 0)
+				{
+					$tRNA->{mat} = substr($tRNA->{seq}, 0, $tRNA->{introns}->[$i]->{start} - 1);
+					$tRNA->{mat_ss} = substr($tRNA->{ss}, 0, $tRNA->{introns}->[$i]->{start} - 1);
+				}
+				else
+				{
+					$tRNA->{mat} .= substr($tRNA->{seq}, $tRNA->{introns}->[$i-1]->{end}, $tRNA->{introns}->[$i]->{start} - $tRNA->{introns}->[$i-1]->{end});
+					$tRNA->{mat_ss} .= substr($tRNA->{ss}, $tRNA->{introns}->[$i-1]->{end}, $tRNA->{introns}->[$i]->{start} - $tRNA->{introns}->[$i-1]->{end});
+				}
+			}
+			$tRNA->{mat} .= substr($tRNA->{seq}, $tRNA->{introns}->[scalar(@{$tRNA->{introns}})-1]->{end});
+			$tRNA->{mat_ss} .= substr($tRNA->{ss}, $tRNA->{introns}->[scalar(@{$tRNA->{introns}})-1]->{end});
+		}
+	}
+	
+	return $tRNA;
+}
+
+sub has_cca
+{
+    my ($tRNA) = @_;
+    my $result = 0;
+    if ($tRNA->{mat} =~ /CCA$/)
+    {
+        if ($tRNA->{mat_ss} =~ />[>.]+>.+<[<.]+<(.+)$/)
+        {
+            my $tail = $1;
+            if (length($tail) >= 4)
+            {
+                $result = 1;
+            }
+        }
+    }
+    return $result;
+}
+
+sub get_mature_tRNA_id
+{
+    my ($gene_list, $name_map) = @_;
+    my $index = -1;
+    my %ids = ();
+    for (my $i = 0; $i < scalar(@$gene_list); $i++)
+    {
+        $index = &bsearch_name_map($gene_list->[$i], $name_map);
+        if ($index > -1)
+        {
+            my $transcript_id = substr($name_map->[$index]->[1], 0, rindex($name_map->[$index]->[1], "-"));
+            if (!defined $ids{$transcript_id})
+            {
+                $ids{$transcript_id} = 1;
+            }
+        }
+    }
+    my @sorted_records = sort keys %ids;
+    return \@sorted_records;
+}
+
+sub read_name_map
+{
+    my ($records, $header) = &read_delimited_file($opt_namemap, "\t", 1);
+    my @sorted_records = sort {$a->[0] cmp $b->[0]} @$records;
+    return \@sorted_records;
+}
+
+sub read_delimited_file
+{
+	my ($file, $delimiter, $header) = @_;
+	
+	my %header = ();
+	my @records = ();
+	my $line = "";
+	my $columns = [];
+	
+    &write_message("Status", "Reading ".$file);
+	open(FILE_IN, "$file") or die "Fail to open $file\n";
+	if ($header)
+	{
+		$line = <FILE_IN>;
+		chomp($line);
+		my @cols = split(/$delimiter/, $line);
+		for (my $i = 0; $i < scalar(@cols); $i++)
+		{
+			$header{$cols[$i]} = $i;
+		}
+	}	
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if ($line !~ /^#/)
+		{
+			$columns = [];
+			@$columns = split(/$delimiter/, $line);
+			for (my $i = 0; $i < scalar(@$columns); $i++)
+			{
+				$columns->[$i] =~ s/\"//g;
+			}
+			push(@records, $columns);
+		}
+	}
+	close(FILE_IN);
+	
+	return (\@records, \%header);
+}
+
+sub bsearch_name_map
+{
+    my ($x, $a) = @_;            
+    my ($l, $u) = (0, @$a - 1);  
+    my $i;                       
+    while ($l <= $u)
+	{
+		$i = int(($l + $u)/2);
+		if ($a->[$i]->[0] lt $x)
+		{
+		    $l = $i+1;
+		}
+		elsif ($a->[$i]->[0] gt $x)
+		{
+		    $u = $i-1;
+		} 
+		else
+		{
+			return $i; 
+		}
+    }
+    return -1;         	
+}
+
+sub bsearch_tRNAscanid
+{
+    my ($x, $a) = @_;            
+    my ($l, $u) = (0, @$a - 1);  
+    my $i;                       
+    while ($l <= $u)
+	{
+		$i = int(($l + $u)/2);
+		if ($a->[$i] lt $x)
+		{
+		    $l = $i+1;
+		}
+		elsif ($a->[$i] gt $x)
+		{
+		    $u = $i-1;
+		} 
+		else
+		{
+			return $i; 
+		}
+    }
+    return -1;         	
+}
+
+sub display_credits
+{
+    print STDERR "Copyright (C) 2021-Present Andrew D. Holmes, Patricia P. Chan and Todd M. Lowe\n",
+                 "                           University of California Santa Cruz\n",
+                 "Freely distributed under the GNU General Public License (GPLv3)\n\n";
+}
+
+sub print_usage
+{
+    print STDERR "\nUsage: create_tDRnamer_db [-options]\n\n";
+    print STDERR "  Build tDRnamer reference database\n\n",
+    "Options:\n",
+    "  -d  --db <db name>     : Output directory and name of reference database\n",
+    "  -g  --genome <file>    : Fasta file of genome sequence\n",
+    "  -t  --trna <file>      : tRNAscan-SE output file\n",
+    "  -s  --ss <file>        : tRNAscan-SE secondary structure output file\n",
+    "  -n  --namemap <file>   : GtRNAdb symbol mapping file\n",
+    "  -r  --source <name>    : Sequence source of reference\n",
+    "                               euk - eukaryotes (default)\n",
+    "                               bact - bacteria\n",
+    "                               arch - archaea\n",
+    "  -q  --force            : Force to overwrite output files\n",
+    "  -h  --help             : Print available options\n\n",
+    "Advanced filtering options:\n",
+    "      --skipfilter       : Skip filtering step to include all provided tRNAs\n",
+    "                               (Please refer to the user manual for the details of the filtering process)\n",
+    "      --score            : tRNAscan-SE score cutoff for filtering multicellular eukaryotic tRNA genes (default = 50)\n",
+    "      --isoscore         : Isotype model score cutoff for filtering multicellular eukaryotic tRNA genes (default = 80)\n",
+}
+
+sub set_options
+{    
+    $opt_genome = "";
+    $opt_namemap = "";
+    $opt_db = "";
+    $opt_source = "euk";
+    $opt_trna = "";
+    $opt_ss = "";
+    $opt_skipfilter = 0;
+    $opt_score = 50;
+    $opt_isoscore = 80;
+    $opt_force = 0;
+    $opt_help = 0;
+
+    Getopt::Long::Configure("bundling", "no_auto_abbrev");
+    my $result = Getopt::Long::GetOptions("genome|g=s", "trna|t=s", "namemap|n=s", "db|d=s", "source|r=s", "ss|s=s", 
+        "skipfilter", "score=i", "isoscore=i",
+        "force|q", "help|h");
+
+    if (!$result or $opt_help or $opt_genome eq "" or $opt_namemap eq "" or $opt_db eq "" or $opt_trna eq "" or $opt_ss eq "")
+    {
+        print STDERR "\ncreate_tDRnamer_db $version ($release_date)\n";
+        &display_credits();
+        &print_usage();
+        exit(0);
+    }
+}
+
+sub check_options
+{
+    my $valid = 1;
+    &write_message("Status", "Checking input options");
+
+    if (lc($opt_source) ne "euk" and lc($opt_source) ne "bact" and lc($opt_source) ne "arch")
+    {
+        &write_message("Error", "Invalid source of reference database. Please specify \"euk\", \"bact\", or \"arch\".");
+        $valid = 0;
+    }
+    if ($opt_score < 0 or $opt_score > 100)
+    {
+        &write_message("Error", "Invalid value for --score. Please specify between 0 and 100.");
+        $valid = 0;
+    }
+    if ($opt_isoscore < 0 or $opt_isoscore > 100)
+    {
+        &write_message("Error", "Invalid value for --isoscore. Please specify between 0 and 100.");
+        $valid = 0;
+    }
+ 
+    return $valid;
+}
+
+sub initialize_log
+{
+    my $log_file = $opt_db."_create_tDRnamer_db.log";
+    open ($log, ">$log_file") || die "FATAL: Fail to open log file $log_file\n";
+    print $log "create_tDRnamer_db $version ($release_date)\n";
+    print $log "User: ".getlogin."\n";
+    print $log "Run time: ".localtime."\n";
+    print $log "Command: ".&get_command_arguments()."\n\n";
+}
+
+sub get_command_arguments
+{
+    my $line = "create_tDRnamer_db";
+    
+    $line .= " --db ".$opt_db if ($opt_db ne "");
+    $line .= " --genome ".$opt_genome if ($opt_genome ne "");
+    $line .= " --trna ".$opt_trna if ($opt_trna ne "");
+    $line .= " --ss ".$opt_ss if ($opt_ss ne "");
+    $line .= " --namemap ".$opt_namemap if ($opt_namemap ne "");
+    $line .= " --source ".$opt_source if ($opt_source ne "");
+    $line .= " --skipfilter" if ($opt_skipfilter);
+    $line .= " --score ".$opt_score if ($opt_score != 50 and lc($opt_source) eq "euk");
+    $line .= " --isoscore ".$opt_isoscore if ($opt_isoscore != 80 and lc($opt_source) eq "euk");
+    $line .= " --force" if ($opt_force);
+    
+    return $line;
+}
+
+sub close_log
+{
+    if (defined $log)
+    {
+        close($log);
+    }
+}
+
+sub write_message
+{
+    my ($label, $msg) = @_;
+    if ($label ne "")
+    {
+        print STDERR $label.": ".$msg."\n";
+        print $log $label.": ".$msg."\n";
+    }
+    else
+    {
+        print STDERR $msg."\n";
+        print $log $msg."\n";
+    }
+}
+
+sub write_exec_log
+{
+    my ($temp_log) = @_;
+    if (-s $temp_log > 0)
+    {
+        my $line + "";
+        open(FILE_IN, "$temp_log");
+        while ($line = <FILE_IN>)
+        {
+            print STDERR $line;
+            print $log $line;
+        }
+        close(FILE_IN);
+        print $log "\n";
+    }
+}
+
+sub get_script_path
+{
+    my $full_path = $0;
+    my $path = "";
+    if ($full_path =~ /\//)
+    {
+        $path = substr($full_path, 0, rindex($full_path, "/")+1);
+        if ($path eq "./")
+        {
+            $path = `pwd`;
+            chop($path);
+            $path .= "/";
+        }
+        elsif ($path eq "../")
+        {
+            $path = `pwd`;
+            chop($path);
+            $path = substr($path, 0, rindex($path, "/")+1);
+        }
+    }
+    else
+    {
+        $path = `pwd`;
+        chop($path);
+        $path .= "/";
+    }
+    return $path;
+}

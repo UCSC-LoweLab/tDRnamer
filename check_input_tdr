@@ -1,0 +1,152 @@
+#!/usr/bin/perl -w
+# check_input_tdr
+# Check input tDR sequences for validity
+
+use strict;
+use Getopt::Long;
+
+our ($opt_fasta, $opt_min, $opt_max, $opt_filter, $opt_help);
+
+&set_options();
+&parse_fasta();
+
+exit;
+
+
+sub set_options
+{
+	$opt_fasta = '';
+	$opt_min = 15;
+	$opt_max = 60;
+	$opt_filter = "";
+	
+	Getopt::Long::GetOptions("fasta=s", "min=i", "max=i", "filter=s", "help|h");
+	
+	if ($opt_help || $opt_fasta eq "" || $opt_min <= 0 || $opt_max <= 0 || $opt_max < $opt_min)
+	{
+		die "Usage: check_input_tdr [options] > <log file>\n",
+			"Options\n",
+			"--fasta=<file name>     Fasta file of fragments\n",
+			"--min=<value>           Minimum length of sequence (default = 15)\n",
+			"--max=<value>           Maximum length of sequence (default = 60)\n",
+			"--filter=<file name>    Output fasta file with invalid sequences filtered (optional)\n",
+			"--help -h               Print this help\n\n";
+	}
+}
+
+sub parse_fasta
+{
+	my $seq = "";
+	my $seq_name = "";
+	my $line = "";
+	my $ct = 0;
+	my @invalid_counts = (0,0,0,0,0);
+	my $valid = 1;
+	my $output = 0;
+	my $filtered_count = 0;
+	
+	if ($opt_filter ne "")
+	{
+		open(FILE_OUT, ">$opt_filter") or die "Fail to open $opt_filter\n";
+		$output = 1;
+	}
+	open(FILE_IN, "$opt_fasta") or die "Fail to open $opt_fasta\n";
+	while ($line = <FILE_IN>)
+	{
+		chomp($line);
+		if ($line =~ /^#/ or $line eq "")
+		{}
+		elsif ($line =~ /^>(\S+)/)
+		{
+			if ($seq ne "")
+			{
+				$ct++;
+				$valid = &check_seq($ct, $seq_name, $seq, \@invalid_counts);
+				if ($valid and $output)
+				{
+					print FILE_OUT ">".$seq_name."\n";
+					print FILE_OUT $seq."\n";
+					$filtered_count++;
+				}
+			}
+			$seq_name = $1;
+			$seq = "";
+		}
+		else
+		{
+			$seq .= $line;
+		}
+	}
+	if ($seq ne "")
+	{
+		$ct++;
+		$valid = &check_seq($ct, $seq_name, $seq, \@invalid_counts);
+		if ($valid and $output)
+		{
+			print FILE_OUT ">".$seq_name."\n";
+			print FILE_OUT $seq."\n";
+			$filtered_count++;
+		}
+	}
+	close(FILE_IN);
+	if ($output)
+	{
+		close(FILE_OUT);
+	}
+	
+	print "Total number of sequences: ".$ct."\n";
+	print "Missing sequence name: ".$invalid_counts[0]."\n";
+	print "Sequence name with special characters: ".$invalid_counts[1]."\n";
+	print "Below minimum sequence length (".$opt_min." bp): ".$invalid_counts[2]."\n";
+	print "Above maximum sequence length (".$opt_max." bp): ".$invalid_counts[3]."\n";
+	print "Invalid sequence: ".$invalid_counts[4]."\n";
+	if ($output)
+	{
+		print "Total number of sequences after filtering: ".$filtered_count."\n";
+	}
+}
+
+sub check_seq
+{
+	my ($ct, $seq_name, $seq, $invalid_counts) = @_;
+	my $valid = 1;
+
+	if (&trim($seq_name) eq "")
+	{
+		print $ct.": Sequence name for ".$seq." is missing\n";
+		$invalid_counts->[0] += 1;
+		$valid = 0;
+	}
+	elsif (&trim($seq_name) !~ /^[\w\-\_\:]+$/)
+	{
+		print $ct.": Sequence name for ".$seq." contains special character(s).\n";
+		$invalid_counts->[1] += 1;
+	}
+	my $s = &trim($seq);
+	if (length($s) < $opt_min)
+	{
+		print "Entry ".$ct.": Sequence ".$seq_name." is shorter than minimum (".$opt_min." bp) - length = ".length($s)."\n";
+		$invalid_counts->[2] += 1;
+		$valid = 0;
+	}
+	elsif (length($s) > $opt_max)
+	{
+		print "Entry ".$ct.": Sequence ".$seq_name." is longer than maximum (".$opt_max." bp) - length = ".length($s)."\n";
+		$invalid_counts->[3] += 1;
+		$valid = 0;
+	}
+	elsif ($s !~ /[ACGTUacgtu]+/)
+	{
+		print "Entry ".$ct.": Sequence ".$seq_name." is invalid. Only A, C, G, T, or U can be included.\n";
+		$invalid_counts->[4] += 1;
+		$valid = 0;
+	}
+	return $valid;
+}
+
+sub trim
+{
+	my ($value) = @_;
+	$value =~ s/\ //g;
+	return $value;
+}
