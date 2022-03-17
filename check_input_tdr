@@ -17,7 +17,7 @@ sub set_options
 {
 	$opt_fasta = '';
 	$opt_min = 15;
-	$opt_max = 60;
+	$opt_max = 70;
 	$opt_filter = "";
 	
 	Getopt::Long::GetOptions("fasta=s", "min=i", "max=i", "filter=s", "help|h");
@@ -28,7 +28,7 @@ sub set_options
 			"Options\n",
 			"--fasta=<file name>     Fasta file of fragments\n",
 			"--min=<value>           Minimum length of sequence (default = 15)\n",
-			"--max=<value>           Maximum length of sequence (default = 60)\n",
+			"--max=<value>           Maximum length of sequence (default = 70)\n",
 			"--filter=<file name>    Output fasta file with invalid sequences filtered (optional)\n",
 			"--help -h               Print this help\n\n";
 	}
