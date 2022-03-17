@@ -364,40 +364,48 @@ sub get_fragment_seq
 	my $seq_name = "";
 	my $seq = "";
 	my $index = -1;
+	my $alignment_file = undef;
+	my $found = 0;
 	
-	open(FILE_IN, "$opt_fasta") or die "Fail to open $opt_fasta\n";
-	while ($line = <FILE_IN>)
+	open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	if ($opt_locistk ne "")
 	{
-		chomp($line);
-		if ($line =~ /^>(\S+)/)
+		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
+	}
+
+	for (my $i = 0; $i < scalar(@$fragments); $i++)
+	{
+		$alignment_file = $fh_stk;
+		
+		if ($fragments->[$i]->[1] eq "pretRNA" and $opt_locistk ne "")
 		{
-			if ($seq ne "")
+			$alignment_file = $fh_locistk;
+		}
+
+		seek($alignment_file, 0, 0);
+		while ($line = <$alignment_file>)
+		{
+			chomp($line);
+			if ($line =~ /^#/) {}
+			else
 			{
-				$index = &bsearch_fragment($seq_name, $fragments);
-				if ($index > -1)
+				my ($seq_name, $align) = split(/\s+/, $line);
+				if ($seq_name eq $fragments->[$i]->[0])
 				{
-					$seq =~ s/T/U/g;
-					$fragments->[$index]->[14] = $seq;
+					$found = 1;
+					$align =~ s/\.//g;
+					$align =~ s/-//g;
+					$fragments->[$i]->[14] = $align;
 				}
-			}			
-			$seq_name = $1;
-			$seq = "";
-		}
-		else
-		{
-			$seq .= uc($line);
+			}
 		}
 	}
-	if ($seq ne "")
+	
+	close($fh_stk);
+	if ($opt_locistk ne "")
 	{
-		$index = &bsearch_fragment($seq_name, $fragments);
-		if ($index > -1)
-		{
-			$seq =~ s/T/U/g;
-			$fragments->[$index]->[14] = $seq;
-		}
+		close($fh_locistk);
 	}
-	close(FILE_IN);
 }
 
 sub compute_name
