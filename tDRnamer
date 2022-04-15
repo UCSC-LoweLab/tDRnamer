@@ -17,8 +17,8 @@
 use strict;
 use Getopt::Long;
 
-our $version = "1.0.1"; 
-our $release_date = "Mar 2022";
+our $version = "1.0.2"; 
+our $release_date = "Apr 2022";
 our $program_id = "tDRnamer ".$version;
 
 our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_minread, $opt_minlen, $opt_maxlen,
