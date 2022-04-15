@@ -505,12 +505,22 @@ sub set_tDR_name
 			$name = "p".$name;
 			$prefix = $name;
 		}
+		elsif (index($source[0], "nmt-tRNA") == 0)
+		{
+			$name = "nm".$name;
+			$prefix = $name;
+		}
 	}
 
 	my $name_set = 0;
 	for (my $i = 0; $i < scalar(@source); $i++)
 	{
 		my $source_name = substr($source[$i], index($source[$i], "-"));
+		if (index($source[$i], "mt-tRNA") == 0 or index($source[$i], "pt-tRNA") == 0 or index($source[$i], "nmt-tRNA") == 0)
+		{
+			$source_name = substr($source_name, index($source_name, "-"));
+		}
+
 		my $compare = "";
 		if (defined $tDR_names)
 		{
@@ -1029,12 +1039,12 @@ sub sort_source_tRNAs
 	my (@parts_a) = split(/\-/, $a);
 	my (@parts_b) = split(/\-/, $b);
 
-	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt")
+	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt" or $parts_a[0] eq "pt")
 	{
 		$parts_a[1] = $parts_a[0]."-".$parts_a[1];
 		shift @parts_a;
 	}
-	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt")
+	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt" or $parts_b[0] eq "pt")
 	{
 		$parts_b[1] = $parts_b[0]."-".$parts_b[1];
 		shift @parts_b;
@@ -1068,12 +1078,12 @@ sub sort_tDR_cluster_location
 	my (@parts_a) = split(/\-/, $gene_a);
 	my (@parts_b) = split(/\-/, $gene_b);
 
-	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt")
+	if ($parts_a[0] eq "mt" or $parts_a[0] eq "nmt" or $parts_a[0] eq "pt")
 	{
 		$parts_a[1] = $parts_a[0]."-".$parts_a[1];
 		shift @parts_a;
 	}
-	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt")
+	if ($parts_b[0] eq "mt" or $parts_b[0] eq "nmt" or $parts_b[0] eq "pt")
 	{
 		$parts_b[1] = $parts_b[0]."-".$parts_b[1];
 		shift @parts_b;

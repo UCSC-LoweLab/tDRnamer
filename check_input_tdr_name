@@ -270,7 +270,7 @@ sub check_name
 			}
 			if (!$skip)
 			{
-				if (lc($parts[0]) ne lc("tDR"))
+				if (lc($parts[0]) ne lc("tDR") and lc($parts[0]) ne lc("mtDR") and lc($parts[0]) ne lc("ptDR"))
 				{
 					print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=11).\n";
 					$invalid_counts->[1] += 1;
