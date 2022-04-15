@@ -493,6 +493,20 @@ sub set_tDR_name
 		$iso_code = "-M".scalar(@source);
 	}
 	
+	if (scalar(@source) > 0)
+	{
+		if (index($source[0], "mt-tRNA") == 0)
+		{
+			$name = "m".$name;
+			$prefix = $name;
+		}
+		elsif (index($source[0], "pt-tRNA") == 0)
+		{
+			$name = "p".$name;
+			$prefix = $name;
+		}
+	}
+
 	my $name_set = 0;
 	for (my $i = 0; $i < scalar(@source); $i++)
 	{
