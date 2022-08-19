@@ -17,8 +17,8 @@
 use strict;
 use Getopt::Long;
 
-our $version = "1.0.0"; 
-our $release_date = "Dec 2021";
+our $version = "1.1.0"; 
+our $release_date = "Aug 2022";
 our $program_id = "create_tDRnamer_db ".$version;
 
 our ($opt_genome, $opt_namemap, $opt_db, $opt_source, $opt_trna, $opt_ss, $opt_skipfilter, $opt_score, $opt_isoscore, $opt_force, $opt_help);
@@ -72,6 +72,10 @@ sub create_euk_db
     my $result = &run_maketdrdb($filtered_tRNA_file, 0);
     if ($result)
     {
+        $result = &build_blastn_db();
+    }
+    if ($result)
+    {
         &write_message("Status", "Complete creating tDRnamer database");
     }
     else
@@ -123,15 +127,23 @@ sub create_prok_db
                 &update_mature_tRNAs_fasta($mature_tRNA_ids, $opt_db."-tRNAgenome.fa");
                 if (&update_fasta_index($opt_db."-tRNAgenome.fa"))
                 {
-                    if (&update_bowtie2_index($opt_db."-tRNAgenome.fa"))
-                    {
-                        &cleanup_old_files();
-                        &write_message("Status", "Complete creating tDRnamer database");
-                    }
+                    $result = &update_bowtie2_index($opt_db."-tRNAgenome.fa");
+                }
+                else
+                {
+                    $result = 0;
                 }
             }
+            if ($result)
+            {
+                &cleanup_old_files();
+            }
         }
-        else
+        if ($result)
+        {
+            $result = &build_blastn_db();
+        }
+        if ($result)
         {
             &write_message("Status", "Complete creating tDRnamer database");
         }
@@ -402,6 +414,27 @@ sub cleanup_old_files
     system("rm ".$file);
     $file = $opt_db."-trnaconvert.stk.orig";
     system("rm ".$file);
+}
+
+sub build_blastn_db
+{
+    my $result = 0;
+    my $temp_log = $opt_db."-makedb-run$$.log";
+    my $cmd = "makeblastdb -dbtype nucl -in ".$opt_db."-tRNAgenome.fa -logfile ".$temp_log;
+    &write_message("Status", "Creating blast database");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r "$opt_db-tRNAgenome.fa.nhr" and -r "$opt_db-tRNAgenome.fa.nsq")
+    {
+        $result = 1;
+    }
+    else
+    {
+        &write_message("Error", "Fail to create blastn database");
+    }
+    return $result;
 }
 
 sub check_high_confidence_flag

@@ -33,6 +33,8 @@ your own risk.
 * pysam 0.15.3
   * Older versions have a memory leak, make sure you have an updated version
 * bowtie2 2.3.5
+* NCBI BLAST+ 2.3 or higher
+* EMBOSS 6.6
 * samtools 1.9
 * Infernal 1.1 or higher
 

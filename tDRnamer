@@ -17,14 +17,25 @@
 use strict;
 use Getopt::Long;
 
-our $version = "1.0.2"; 
-our $release_date = "Apr 2022";
+our $version = "1.1.0"; 
+our $release_date = "Aug 2022";
 our $program_id = "tDRnamer ".$version;
 
-our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_minread, $opt_minlen, $opt_maxlen,
-    $opt_force, $opt_cores, $opt_help);
+our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_max, $opt_minread, $opt_minlen, $opt_maxlen,
+    $opt_maxmismatch, $opt_force, $opt_cores, $opt_skipcheck, $opt_bin, $opt_genomes, $opt_help);
 our $log = undef;
 our $script_path = "";
+
+our %comp_map = (                     # Complement map
+                'A' => 'T', 'T' => 'A', 'U' => 'A',
+                'G' => 'C', 'C' => 'G',
+                'Y' => 'R', 'R' => 'Y', 
+                'S' => 'W', 'W' => 'S', 
+                'M' => 'K', 'K' => 'M', 
+                'B' => 'V', 'V' => 'B', 
+                'H' => 'D', 'D' => 'H', 
+                'N' => 'N', 'X' => 'X',
+                '?' => '?', '-' => '-');
 
 &set_options();
 $script_path = &get_script_path();
@@ -47,9 +58,19 @@ if (&check_options())
         &write_message("Error", "Output files already exist. Please use --force option to overwrite them."); 
     }
 }
+&clean_up();
 &close_log();
 
 exit;
+
+sub clean_up
+{
+    if ($opt_max)
+    {
+        my $cmd = "rm -f ".$opt_output."-temp_*$$.*";
+        system($cmd);
+    }
+}
 
 sub search_by_seq
 {
@@ -60,26 +81,38 @@ sub search_by_seq
     my $tDR_cluster = $opt_output."-clusters.txt";
     my $pre_tDR_cluster = $opt_output."-pre-clusters.txt";
 
-    if (&is_fastq_file())
+    if (&is_fastq_file() and !$opt_skipcheck)
     {
         ($result, $fasta_file) = &collapse_reads();
     }
-    if ($result)
+    if ($result and !$opt_skipcheck)
     {
         ($result, $filtered_fasta, $seq_count) = &check_tDR_sequences($fasta_file);
     }
-    if ($result)
+    if ($result and !$opt_skipcheck)
     {
         ($reformatted_fasta, $seq_count) = &reformat_fasta($filtered_fasta);
     }
-    if ($seq_count > 0)
+    if ($opt_skipcheck)
     {
-        ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+        $reformatted_fasta = $opt_seq;
+        $seq_count = 1;
+    }
+    if ($seq_count > 0 or $opt_skipcheck)
+    {
+        if (!$opt_max)
+        {
+            ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+        }
+        else
+        {
+            ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs_max_mode($reformatted_fasta);
+        }
         if ($result)
         {
             &write_message("Status", $tDR_count." sequences are identified as tDRs."); 
 
-            if ((lc($opt_source) eq "euk" and $mat_tRNA_tDR_count > 0) or lc($opt_source) ne "euk")
+            if ($mat_tRNA_tDR_count > 0)
             {
                 $result = &cluster_tDRs($tDRs_list, $tDRs_stk, $tDR_cluster);
             }
@@ -91,13 +124,9 @@ sub search_by_seq
             {
                 &write_message("Error", "Fail to group tDRs.");
             }
-            if ($result)
+            if ($result and $tDR_count > 0)
             {
-                $result = &convert_tdrnamer_outputs($filtered_fasta, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster);
-            }
-            else
-            {
-                &write_message("Error", "Fail to group tDRs derived from pre-tRNAs.");
+                $result = &convert_tdrnamer_outputs($reformatted_fasta, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster);
             }
             if ($result)
             {
@@ -121,16 +150,25 @@ sub search_by_seq
 
 sub search_by_name
 {
-    my ($temp_fasta_file, $tDR_seq_count);
+    my ($temp_fasta_file, $tDR_seq_count, $find_tdr_log);
     my ($reformatted_fasta, $seq_count);
     my ($tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
     my $tDR_cluster = $opt_output."-clusters.txt";
     my $pre_tDR_cluster = $opt_output."-pre-clusters.txt";
+    my ($filtered_names, $name_count);
+    my $result = 1;
 
-    my ($result, $filtered_names, $name_count) = &check_tDR_names();
+    if (!$opt_skipcheck)
+    {
+        ($result, $filtered_names, $name_count) = &check_tDR_names();
+    }
+    else
+    {
+        $filtered_names = $opt_name;
+    }
     if ($result)
     {
-        ($result, $temp_fasta_file, $tDR_seq_count) = &find_tDRs($filtered_names);
+        ($result, $temp_fasta_file, $tDR_seq_count, $find_tdr_log) = &find_tDRs($filtered_names);
         if ($result)
         {
             &write_message("Status", "Sequences for ".$tDR_seq_count." tDR names are found.");
@@ -145,14 +183,21 @@ sub search_by_name
         }
         if ($result)
         {
-            ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+            if (!$opt_max)
+            {
+                ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs($reformatted_fasta);
+            }
+            else
+            {
+                ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &name_tDRs_max_mode($reformatted_fasta);
+            }
             if ($result)
             {
                 if ($tDR_count < $tDR_seq_count)
                 {
                     &write_message("Status", $tDR_count." tDR sequences are verified with reference database search."); 
                 }
-                if ((lc($opt_source) eq "euk" and $mat_tRNA_tDR_count > 0) or lc($opt_source) ne "euk")
+                if ($mat_tRNA_tDR_count > 0)
                 {
                     $result = &cluster_tDRs($tDRs_list, $tDRs_stk, $tDR_cluster);
                 }
@@ -164,13 +209,10 @@ sub search_by_name
                 {
                     &write_message("Error", "Fail to group tDRs.");
                 }
-                if ($result)
+                if ($result and $tDR_count > 0)
                 {
-                    $result = &convert_tdrnamer_outputs($temp_fasta_file, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster);
-                }
-                else
-                {
-                    &write_message("Error", "Fail to group tDRs derived from pre-tRNAs.");
+                    $result = &convert_tdrnamer_outputs_for_names($reformatted_fasta, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster,
+                                                                  $filtered_names, $find_tdr_log);
                 }
                 if ($result)
                 {
@@ -358,6 +400,10 @@ sub name_tDRs
         $cmd .= " ".$pre_tDRs_stk;
     }
     $cmd .= " >".$tDRs_list." 2>".$temp_log;
+    if ($opt_bin ne "")
+    {
+        $cmd = $opt_bin."/".$cmd;
+    }
     &write_message("Status", "Search sequences against reference database");
     system($cmd);
     &write_message("Status", "Align sequences with bowtie2");
@@ -366,6 +412,67 @@ sub name_tDRs
     &write_message("Status", "Filtering and identifying tDRs");
     &write_exec_log($temp_log);
     system("rm $temp_log");
+
+    ($result, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &get_tDR_counts($tDRs_list);
+
+    return ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+}
+
+sub name_tDRs_max_mode
+{
+    my ($fasta_file) = @_;
+    my $temp_log = $opt_output."-run$$.log";
+    my $tDRs_stk = $opt_output."-tDRs.stk";
+    my $tDRs_list = $opt_output."-tDR-list.txt";
+    my $pre_tDRs_stk = $opt_output."-pre-tDRs.stk";
+    my $tDR_count = 0;
+    my $pre_tRNA_tDR_count = 0;
+    my $mat_tRNA_tDR_count = 0;
+
+    my $query_indices = &index_sequences($fasta_file);
+    my ($result, $first_scan_hits, $rescans) = &max_mode_first_scan($fasta_file);
+    my $second_scan_hits = [];
+    my $alignment_counts = [];
+    my $sam_file = "";
+    if ($result)
+    {
+        if (scalar(@$rescans) > 0)
+        {
+            my $ref_indices = &index_sequences($opt_db."-tRNAgenome.fa");
+            ($second_scan_hits, $alignment_counts) = &max_mode_second_scan($rescans, $fasta_file, $query_indices, $ref_indices);
+        }
+        if (scalar(@$first_scan_hits) > 0 or scalar(@$second_scan_hits) > 0)
+        {
+            $sam_file = &write_sam_file($first_scan_hits, $second_scan_hits, $alignment_counts, $query_indices, $fasta_file);
+        }
+    }
+    if ($result and -r $sam_file and -s $sam_file)
+    {
+        my $cmd = $script_path."nametdrs.py ".$opt_db." ".$tDRs_stk;
+        if (lc($opt_source) eq "euk")
+        {
+            $cmd .= " ".$pre_tDRs_stk;
+        }
+        $cmd .= " < ".$sam_file." >".$tDRs_list." 2>".$temp_log;
+        &write_message("Status", "Filtering and identifying tDRs");
+        system($cmd);
+        &write_exec_log($temp_log);
+        system("rm $temp_log");
+
+        ($result, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count) = &get_tDR_counts($tDRs_list);
+    }
+
+    return ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+}
+
+sub get_tDR_counts
+{
+    my ($tDRs_list) = @_;
+    my $tDR_count = 0;
+    my $pre_tRNA_tDR_count = 0;
+    my $mat_tRNA_tDR_count = 0;
+    my $result = 0;
+    my $cmd = "";
 
     if (-r $tDRs_list and -s $tDRs_list)
     {
@@ -395,7 +502,925 @@ sub name_tDRs
         }
     }
 
-    return ($result, $tDRs_stk, $pre_tDRs_stk, $tDRs_list, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+    return ($result, $tDR_count, $mat_tRNA_tDR_count, $pre_tRNA_tDR_count);
+}
+
+sub max_mode_first_scan
+{
+    my ($fasta_file) = @_;
+    my $result = 0;
+    my ($first_scan_hits, $rescans);
+    my $blast_output_file = $opt_output."-temp_blast$$.out";
+
+    my $cmd = "blastn -db ".$opt_db."-tRNAgenome.fa -word_size 4 -perc_identity 70 -task blastn-short -evalue 5 -outfmt \"6 qaccver saccver pident mismatch gapopen qstart qend sstart send evalue qlen\" -num_threads ".
+        $opt_cores." -query ".$fasta_file." -out ".$blast_output_file;
+    if ($opt_bin ne "")
+    {
+        $cmd = $opt_bin."/".$cmd;
+    }
+    &write_message("Status", "First round search of sequences against reference database in max mode");
+    system($cmd);
+    &write_message("Status", "Filtering first recond scan candidates");
+
+    if (-r $blast_output_file)
+    {
+        ($first_scan_hits, $rescans) = &parse_blast_output($blast_output_file);
+        if (scalar(@$first_scan_hits) > 0 or scalar(@$rescans) > 0)
+        {
+            $result = 1;
+        }
+    }
+
+    return ($result, $first_scan_hits, $rescans);
+}
+
+sub parse_blast_output
+{
+    my ($blast_output_file) = @_;
+    my $line = "";
+    my $columns = [];
+    my $last_query_id = "";
+    my $matched = 0;
+    my @alignments = ();
+    my $sorted_records = [];
+    my @matches = ();
+    my @rescans = ();
+
+    open (FILE_IN, "$blast_output_file") || die "Fail to open $blast_output_file\n";
+    while ($line = <FILE_IN>)
+    {
+        if ($line !~ /^#/)
+        {
+            chomp($line);
+            $columns = [];
+            @$columns = split(/\t/, $line);
+            if ($columns->[7] < $columns->[8])
+            {
+                push(@$columns, "+");
+            }
+            else
+            {
+                my $temp = $columns->[7];
+                $columns->[7] = $columns->[8];
+                $columns->[8] = $temp;
+                push(@$columns, "-");
+            }
+
+            if ($last_query_id ne $columns->[0])
+            {
+                if (scalar(@alignments) > 0)
+                {
+                    ($matched, $sorted_records) = &filter_blast_hits(\@alignments);
+                    if (&check_blast_hits($sorted_records))
+                    {
+                        if ($matched)
+                        {
+                            push(@matches, $sorted_records);
+                        }
+                        else
+                        {
+                            push(@rescans, $sorted_records);
+                        }
+                    }
+                }
+                $matched = 0;
+                @alignments = ();
+                $sorted_records = [];
+                $last_query_id = $columns->[0];
+            }
+            push(@alignments, $columns);
+        }
+    }
+    if (scalar(@alignments) > 0)
+    {
+        ($matched, $sorted_records) = &filter_blast_hits(\@alignments);
+        if (&check_blast_hits($sorted_records))
+        {
+            if ($matched)
+            {
+                push(@matches, $sorted_records);
+            }
+            else
+            {
+                push(@rescans, $sorted_records);
+            }
+        }
+    }
+    close (FILE_IN);
+
+    return (\@matches, \@rescans);
+}
+
+sub filter_blast_hits
+{
+    my ($alignments) = @_;
+    my $last_evalue = 999;
+    my $evalue_count = 1;
+    my $max_evalue_count = 5;
+    my $matched = 0;
+    my $include = 0;
+    my @records = ();
+    my %sources = ();
+    my ($accepted_strand, $sorted_alignments) = &get_strand($alignments);    
+
+    for (my $i = 0; $i < scalar(@$sorted_alignments); $i++)
+    {   
+        if ($evalue_count < $max_evalue_count)
+        {
+            if (!defined $sources{$sorted_alignments->[$i]->[1]})
+            {
+                if ($sorted_alignments->[$i]->[9] > $last_evalue)
+                {
+                    if (!$matched)
+                    {
+                        $include = 1;
+                    }
+                    else
+                    {
+                        $include = 0;
+                        last;
+                    }
+                    $evalue_count++;
+                }
+                else
+                {
+                    $include = 1;
+                }
+            }
+            else
+            {
+                $include = 0;
+            }
+            if ($include and $accepted_strand eq $sorted_alignments->[$i]->[11])
+            {
+                if ($sorted_alignments->[$i]->[5] == 1 and $sorted_alignments->[$i]->[6] == $sorted_alignments->[$i]->[10] 
+                    and $sorted_alignments->[$i]->[3] == 0 and $sorted_alignments->[$i]->[4] == 0 
+                    and $sorted_alignments->[$i]->[2] == 100.000)
+                {
+                    $matched = 1;
+                }
+                push(@records, $sorted_alignments->[$i]);
+                $sources{$sorted_alignments->[$i]->[1]} = 1;
+            }
+            elsif ($accepted_strand ne $sorted_alignments->[$i]->[11] and $evalue_count > 1)
+            {
+                last;
+            }
+        }
+        else
+        {
+            $include = 0;
+            last;
+        }
+        $last_evalue = $sorted_alignments->[$i]->[9];
+    }
+
+    return ($matched, \@records);
+}
+
+sub get_strand
+{
+    my ($alignments) = @_;
+    my @sorted_alignments = sort {$a->[9] <=> $b->[9] || $a->[1] cmp $b->[1]} @$alignments;
+    my @resorted_alignments = ();
+    my $last_evalue = -1;
+    my @pos_strand = ();
+    my @neg_strand = ();
+    my $evalue_count = -1;
+    my $strand = "+";
+
+    for (my $i = 0; $i < scalar(@sorted_alignments); $i++)
+    {
+        if ($last_evalue != $sorted_alignments[$i]->[9])
+        {
+            $evalue_count++;
+            $pos_strand[$evalue_count] = 0;
+            $neg_strand[$evalue_count] = 0;
+            $last_evalue = $sorted_alignments[$i]->[9];
+        }
+        if ($evalue_count < 2)
+        {
+            if ($sorted_alignments[$i]->[11] eq "+")
+            {
+                $pos_strand[$evalue_count]++;
+            }
+            else
+            {
+                $neg_strand[$evalue_count]++;
+            }
+        }
+		else
+        {
+            last;
+        }
+    }
+    if ($neg_strand[0] > $pos_strand[0])
+    {
+        $strand = "-";
+        if ($neg_strand[0] == 1)
+        {
+			if (defined $neg_strand[1] and defined $pos_strand[1] and ($neg_strand[1] + $pos_strand[1]) > 1)
+            {
+				if ($neg_strand[0] + $neg_strand[1] < $pos_strand[0] + $pos_strand[1])
+                {
+					$strand = "+";
+				}
+			}			
+		}		
+    }
+    
+    if ($strand eq "-")
+    {
+        @resorted_alignments = sort {$a->[9] <=> $b->[9] || $b->[11] cmp $a->[11] || $a->[1] cmp $b->[1]} @sorted_alignments;
+    }
+    else
+    {
+        @resorted_alignments = sort {$a->[9] <=> $b->[9] || $a->[11] cmp $b->[11] || $a->[1] cmp $b->[1]} @sorted_alignments;
+    }
+
+    return ($strand, \@resorted_alignments);
+}
+
+sub check_blast_hits
+{
+    my ($records) = @_;
+    my $valid = 1;
+
+    if (scalar(@$records) == 0)
+    {
+        $valid = 0;
+    }
+    else
+    {
+        my $last_strand = $records->[0]->[11];
+        for (my $i = 1; $i < scalar(@$records); $i++)
+        {
+            if ($last_strand ne $records->[$i]->[11])
+            {
+                $valid = 0;
+            }
+        }
+    }
+
+    return $valid;
+}
+
+sub max_mode_second_scan
+{
+    my ($rescans, $fasta_file, $query_indices, $ref_indices) = @_;
+    my ($fh_query, $fh_ref);
+    my $temp_needle_out = $opt_output."-temp_needle$$.out";
+    my $temp_needle_err = $opt_output."-temp_needle$$.err";
+    my $temp_needle_mod_out = $opt_output."-temp_needle_mod$$.out";
+    my $cmd = "";
+
+    &write_message("Status", "Second round search of sequences against reference database in max mode");
+
+    if (-r $temp_needle_out)
+    {
+		system("rm ".$temp_needle_out);
+	}
+	
+    open ($fh_query, "$fasta_file") or die "Fail to open $fasta_file\n";
+    open ($fh_ref, "$opt_db-tRNAgenome.fa") or die "Fail to open $opt_db-tRNAgenome.fa\n";
+    
+    for (my $i = 0; $i < scalar(@$rescans); $i++)
+    {
+        my $candidates = $rescans->[$i];
+		my ($temp_query_fasta, $temp_query_name) = &write_temp_query_fasta($fh_query, $query_indices, $candidates->[0]->[0]);
+		my $temp_ref_fasta = &write_temp_ref_fasta($fh_ref, $ref_indices, $candidates);
+        if ($temp_query_fasta ne "" and $temp_ref_fasta ne "")
+        {
+            $cmd = "";
+            if ($opt_bin ne "")
+            {
+                $cmd = $opt_bin."/";
+            }
+            $cmd .= "needleall -aformat fasta -auto -stdout -gapopen 15 -gapextend 2.0 -errfile ".$temp_needle_err." ";
+            if ($candidates->[0]->[11] eq "-")
+            {
+                $cmd .= "-sreverse1 ";
+            }
+            $cmd .= $temp_query_fasta." ".$temp_ref_fasta;
+            if ($temp_query_name eq $candidates->[0]->[0])
+            {
+                $cmd .= " >> ".$temp_needle_out;
+                system($cmd);
+            }
+            else
+            {
+                $cmd .= " > ".$temp_needle_mod_out;
+                system($cmd);
+                $cmd = "sed 's/>".$temp_query_name."/>".$candidates->[0]->[0]."/g' ".$temp_needle_mod_out." >> ".$temp_needle_out;
+                system($cmd);
+            }
+        }
+    }
+    
+    close ($fh_ref);
+    close($fh_query);
+
+    my $second_scan_hits = &filter_second_scan_hits($temp_needle_out, $rescans);
+    my $alignment_counts = &count_alignments($second_scan_hits);
+    return ($second_scan_hits, $alignment_counts);
+}
+
+sub count_alignments
+{
+    my ($second_scan_hits) = @_;
+    my @alignment_counts = ();
+    my $record = [];
+    my $last_query_name = "";
+    my $count = 0;
+
+    for (my $i = 0; $i < scalar(@$second_scan_hits); $i++)
+    {
+        if ($second_scan_hits->[$i]->[0] ne $last_query_name)
+        {
+            if ($last_query_name ne "")
+            {
+                $record = [];
+                push(@$record, $last_query_name);
+                push(@$record, $count);
+                push(@alignment_counts, $record);
+            }
+            $last_query_name = $second_scan_hits->[$i]->[0];
+            $count = 0;
+        }
+        $count++;
+    }
+    if ($last_query_name ne "")
+    {
+        $record = [];
+        push(@$record, $last_query_name);
+        push(@$record, $count);
+        push(@alignment_counts, $record);
+    }
+    my @sorted_records = sort {$a->[0] cmp $b->[0]} @alignment_counts;
+    return \@sorted_records;
+}
+
+sub filter_second_scan_hits
+{
+    my ($temp_needle_out, $rescans) = @_;
+    my $line = "";
+    my $idx = -1;
+    my $ref_name = "";
+    my $ref_seq = "";
+    my $last_query_name = "";
+    my $query_name = "";
+    my $query_seq = "";
+    my $include = 0;
+    my $alignment_rec = [];
+    my $strand = "+";
+    my $include_record = [];
+    my @second_scan_hits = ();
+    my @candidates = ();
+    my $rescan_index = -1;
+    my $new_alignment = 1;
+    my $name = "";
+    my $seq =  "";
+    
+    &write_message("Status", "Filtering second recond scan candidates");
+    open (FILE_IN, $temp_needle_out) or die "Fail to open $temp_needle_out\n";
+    while ($line = <FILE_IN>)
+    {
+        chomp($line);
+        $line = &trim($line);
+        if ($line ne "" and $line !~ /^#/)
+        {
+            if ($line =~ /^>(\S+)/)
+            {
+                $name = $1;
+                if ($seq ne "")
+                {
+                    if ($new_alignment)
+                    {
+                        $query_seq = $seq;
+                        $new_alignment = 0;
+                    }
+                    else
+                    {
+                        $ref_seq = $seq;
+                        if ($last_query_name ne $query_name)
+                        {
+                            if (scalar(@candidates) > 0)
+                            {
+                                &get_second_scan_hits(\@second_scan_hits, \@candidates);
+                            }
+                            @candidates = ();
+                            $rescan_index++;
+                            $strand = "+";
+                            if ($rescan_index < scalar(@$rescans) and $rescans->[$rescan_index]->[0]->[0] eq $query_name)
+                            {
+                                $strand = $rescans->[$rescan_index]->[0]->[11];
+                            }
+                        }
+                        ($include, $alignment_rec) = &check_second_scan_hit($query_seq, $ref_seq);
+                        if ($include)
+                        {
+                            $include_record = [];
+                            push(@$include_record, $query_name);
+                            push(@$include_record, $ref_name);
+                            push(@$include_record, @$alignment_rec);
+                            push(@$include_record, $strand);
+                            $query_seq =~ s/-//g;
+                            push(@$include_record, $query_seq);
+                            push(@candidates, $include_record);
+                        }
+                        $last_query_name = $query_name;
+                        $query_name = "";
+                        $query_seq = "";
+                        $ref_name = "";
+                        $ref_seq = "";
+                        $new_alignment = 1;
+                    }
+                }
+                if ($new_alignment)
+                {
+                    $query_name = $name;
+                }
+                else
+                {
+                    $ref_name = $name;
+                }
+                $seq = "";
+            }
+            else
+            {
+                $seq .= $line;
+            }
+        }        
+	}
+	close (FILE_IN);
+
+    if ($seq ne "")
+    {
+        $ref_seq = $seq;
+        if ($last_query_name ne $query_name)
+        {
+            if (scalar(@candidates) > 0)
+            {
+                &get_second_scan_hits(\@second_scan_hits, \@candidates);
+            }
+            @candidates = ();
+            $rescan_index++;
+            $strand = "+";
+            if ($rescan_index < scalar(@$rescans) and $rescans->[$rescan_index]->[0]->[0] eq $query_name)
+            {
+                $strand = $rescans->[$rescan_index]->[0]->[11];
+            }
+        }
+        ($include, $alignment_rec) = &check_second_scan_hit($query_seq, $ref_seq);
+        if ($include)
+        {
+            $include_record = [];
+            push(@$include_record, $query_name);
+            push(@$include_record, $ref_name);
+            push(@$include_record, @$alignment_rec);
+            push(@$include_record, $strand);
+            $query_seq =~ s/-//g;
+            push(@$include_record, $query_seq);
+            push(@candidates, $include_record);
+        }
+        if (scalar(@candidates) > 0)
+        {
+            &get_second_scan_hits(\@second_scan_hits, \@candidates);
+        }
+    }
+
+    return \@second_scan_hits;
+}
+
+sub get_second_scan_hits
+{
+    my ($second_scan_hits, $candidates) = @_;
+    my @sorted_candidates = sort {$a->[8] <=> $b->[8] || $a->[1] cmp $b->[1]} @$candidates;
+    my $last_mismatches = $sorted_candidates[0]->[8];
+    push(@$second_scan_hits, $sorted_candidates[0]);
+
+    for (my $i = 1; $i < scalar(@sorted_candidates); $i++)
+    {
+        if ($sorted_candidates[$i]->[8] == $last_mismatches)
+        {
+            push(@$second_scan_hits, $sorted_candidates[$i]);
+        }
+    }
+}
+
+sub check_second_scan_hit
+{
+    my ($query_seq, $ref_seq) = @_;
+
+    my $temp = $query_seq;
+    $temp =~ s/-//g;
+    my $query_len = length($temp);
+    my $max_mismatch = int($opt_maxmismatch / 100 * $query_len + 0.5);
+    my $start_pos = 0;
+    my $end_pos = 0;
+    my $align = 0;
+    my $count = 0;
+    my $mismatches = 0;
+    my $gap_open = 0;
+    my $gap_ext = 0;
+    my $total_variants = 0;
+    my $include = 0;
+    my $last_code = "";
+    my $code_count = 0;
+    my $cigar = "";
+    my @record = ();
+    
+    for (my $i = 0; $i < length($query_seq); $i++)
+    {
+        if (substr($query_seq, $i, 1) ne "-" and !$align)
+        {
+			$align = 1;
+            $start_pos = $i + 1;
+		}
+        elsif (substr($query_seq, $i, 1) eq "-" and $count == $query_len)
+        {
+            $align = 0;
+            $end_pos = $i + 1;
+            last;
+        }
+		if ($align)
+        {
+            if (substr($query_seq, $i, 1) eq "-")
+            {
+                ($last_code, $code_count, $cigar) = &format_cigar($last_code, "D", $code_count, $cigar);
+                if ($code_count == 1)
+                {
+					$gap_open++;
+				}
+                else
+                {
+                    $gap_ext++;
+                }
+            }
+            elsif (substr($ref_seq, $i, 1) eq "-")
+            {
+                if ($last_code ne "")
+                {
+                    ($last_code, $code_count, $cigar) = &format_cigar($last_code, "I", $code_count, $cigar);
+                    $count++;
+                    if ($code_count == 1)
+                    {
+                        $gap_open++;
+                    }
+                    else
+                    {
+                        $gap_ext++;
+                    }
+                }
+                else
+                {
+                    $align = 0;
+                    $end_pos = 0;
+                    last;
+                }
+            }
+			else
+            {
+                if (substr($query_seq, $i, 1) ne substr($ref_seq, $i, 1))
+                {
+                    $mismatches++;
+                }
+                ($last_code, $code_count, $cigar) = &format_cigar($last_code, "M", $code_count, $cigar);
+                $count++;
+            }
+		}
+    }
+    if ($last_code ne "")
+    {
+        $cigar .= $code_count.$last_code;
+    }
+    $total_variants = $mismatches + $gap_open + $gap_ext;
+    if ($total_variants <= $max_mismatch and $end_pos > $start_pos and $start_pos > 0)
+    {
+		$include = 1;
+        push(@record, $start_pos);
+        push(@record, $end_pos);
+        push(@record, $cigar);
+        push(@record, $mismatches);
+        push(@record, $gap_open);
+        push(@record, $gap_ext);
+        push(@record, $total_variants);
+	}
+	
+    return ($include, \@record);
+}
+
+sub format_cigar
+{
+    my ($last_code, $new_code, $code_count, $cigar) = @_;
+
+    if ($last_code eq $new_code)
+    {
+        $code_count++;
+    }
+    else
+    {
+        if ($last_code ne "")
+        {
+            $cigar .= $code_count.$last_code;
+        }
+        $code_count = 1;
+        $last_code = $new_code;
+    }
+    
+    return ($last_code, $code_count, $cigar);
+}
+
+sub write_temp_query_fasta
+{
+    my ($fh_query, $query_indices, $name) = @_; 
+    my $temp_fasta = $opt_output."-temp_query$$.fa";
+    
+    my $temp_name = $name;
+    $temp_name =~ s/:/_/g;
+    my $seq = &get_sequence($fh_query, $query_indices, $name);
+    if ($seq ne "")
+    {
+		open (FILE_OUT, ">$temp_fasta") or die "Fail to open $temp_fasta\n";
+        print FILE_OUT ">".$temp_name."\n";
+        print FILE_OUT $seq."\n";
+        close (FILE_OUT);
+	}
+	else
+    {
+        $temp_fasta = "";
+    }
+    
+    return ($temp_fasta, $temp_name);
+}
+
+sub write_temp_ref_fasta
+{
+    my ($fh_ref, $ref_indices, $candidates) = @_; 
+    my $temp_fasta = $opt_output."-temp_ref$$.fa";
+    my $count = 0;
+    
+    open (FILE_OUT, ">$temp_fasta") or die "Fail to open $temp_fasta\n";
+    for (my $j = 0; $j < scalar(@$candidates); $j++)
+    {
+        my $seq = &get_sequence($fh_ref, $ref_indices, $candidates->[$j]->[1]);
+        if ($seq ne "")
+        {
+            print FILE_OUT ">".$candidates->[$j]->[1]."\n";
+            print FILE_OUT $seq."\n";
+            $count++;
+        }
+    }
+    close (FILE_OUT);
+    
+    if ($count == 0)
+    {
+		$temp_fasta = "";
+	}
+    
+    return $temp_fasta;
+}
+
+sub write_sam_file
+{
+    my ($first_scan_hits, $second_scan_hits, $alignment_counts, $query_indices, $fasta_file) = @_;
+    my $sam_file = $opt_output."-tDRs.sam";
+    my $fh_sam;
+    
+    open($fh_sam, ">$sam_file") or die "Fail to open $sam_file\n";
+    &write_sam_header($fh_sam);
+    &write_first_scan_hits($first_scan_hits, $query_indices, $fasta_file, $fh_sam);
+    &write_second_scan_hits($second_scan_hits, $alignment_counts, $fh_sam); 
+    close($fh_sam);
+
+    return $sam_file;
+}
+
+sub write_sam_header
+{
+    my ($fh) = @_;
+    my $ref_fai = $opt_db."-tRNAgenome.fa.fai";
+    my $line = "";
+    my @columns = ();
+    
+    print $fh "\@HD\tVN:1.0\tSO:unsorted\n";
+    
+    open (FILE_IN, "$ref_fai") or die "Fail to open $ref_fai\n";
+    while ($line = <FILE_IN>)
+    {
+        chomp($line);
+		@columns = split(/\t/, $line);
+        print $fh "\@SQ\tSN:".$columns[0]."\tLN:".$columns[1]."\n";
+	}
+	close (FILE_IN);
+    
+    print $fh "\@PG\tID:tDRnamer\tPN:tDRnamer\tVN:1.1.0\tCL:\"".&get_command_arguments()."\"\n";
+}
+
+sub write_first_scan_hits
+{
+    my ($first_scan_hits, $query_indices, $fasta_file, $fh_sam) = @_;
+    my $fh_query;
+    my $flag = 0;
+    
+    open ($fh_query, "$fasta_file") or die "Fail to open $fasta_file\n";
+    for (my $i = 0; $i < scalar(@$first_scan_hits); $i++)
+    {
+        my $query_name = $first_scan_hits->[$i]->[0]->[0];
+        my $query_seq = &get_sequence($fh_query, $query_indices, $query_name);
+        if ($query_seq ne "")
+        {
+			for (my $j = 0; $j < scalar(@{$first_scan_hits->[$i]}); $j++)
+            {
+                $flag = 0;
+                print $fh_sam $query_name."\t";
+                if ($j > 0)
+                {
+                    $flag = 256;
+                }
+                if ($first_scan_hits->[$i]->[$j]->[11] eq "-")
+                {
+					$flag += 16;
+                    $query_seq = &rev_comp_seq($query_seq);
+				}
+                print $fh_sam $flag."\t";
+				print $fh_sam $first_scan_hits->[$i]->[$j]->[1]."\t".$first_scan_hits->[$i]->[$j]->[7]."\t1\t".length($query_seq)."M\t*\t0\t0\t".
+                    $query_seq."\t"."I" x length($query_seq);
+                print $fh_sam "\tAS:i:0";
+                if (scalar(@{$first_scan_hits->[$i]}) > 1)
+                {
+					print $fh_sam "\tXS:i:0";
+				}
+				print $fh_sam "\tXN:i:0\tXM:i:0\tXO:i:0\tXG:i:0\tNM:i:0\t";
+                print $fh_sam "MD:Z:".length($query_seq);
+                print $fh_sam "\tYT:Z:UU\n";
+            }
+		}
+		
+    }
+    close($fh_query);
+}
+
+sub write_second_scan_hits
+{
+    my ($second_scan_hits, $alignment_counts, $fh_sam) = @_;
+    my $flag = 0;
+    my $last_query_name = "";
+    my $query_seq = "";
+    my $idx = -1;
+    my $alignment_count = 0;
+    my $alignment_score = 0;
+    my $alignment_edits = 0;
+    
+    for (my $i = 0; $i < scalar(@$second_scan_hits); $i++)
+    {
+        $alignment_score = 0;
+        my $query_name = $second_scan_hits->[$i]->[0];
+        print $fh_sam $query_name."\t";
+        if ($last_query_name ne $query_name)
+        {
+            $flag = 0;
+            $idx = &bsearch_index($query_name, $alignment_counts);
+            if ($idx > -1)
+            {
+                $alignment_count = $alignment_counts->[$idx]->[1];
+            }
+            $last_query_name = $query_name;
+        }
+        else
+        {
+            $flag = 256;
+        }
+        $query_seq = $second_scan_hits->[$i]->[10];
+        if ($second_scan_hits->[$i]->[9] eq "-")
+        {
+            $flag += 16;
+        }
+        print $fh_sam $flag."\t";
+        print $fh_sam $second_scan_hits->[$i]->[1]."\t".$second_scan_hits->[$i]->[2]."\t0\t".$second_scan_hits->[$i]->[4]."\t*\t0\t0\t".
+            $query_seq."\t"."I" x length($query_seq);
+        
+        $alignment_edits = $second_scan_hits->[$i]->[5] + $second_scan_hits->[$i]->[6] + $second_scan_hits->[$i]->[7];
+        if ($alignment_edits > 0)
+        {
+            $alignment_score = -6;
+        }
+        print $fh_sam "\tAS:i:".$alignment_score;
+        if ($alignment_count > 1)
+        {
+            print $fh_sam "\tXS:i:".$alignment_score;
+        }
+        print $fh_sam "\tXN:i:0\tXM:i:".$second_scan_hits->[$i]->[5]."\tXO:i:".$second_scan_hits->[$i]->[6]."\tXG:i:".$second_scan_hits->[$i]->[7].
+            "\tNM:i:".$alignment_edits."\t";
+        print $fh_sam "MD:Z:".length($query_seq);
+        print $fh_sam "\tYT:Z:UU\n";
+    }
+}
+
+sub get_sequence
+{
+    my ($fh, $indices, $name) = @_;
+    my $line = "";
+    my $seq = "";
+    
+    my $idx = &bsearch_index($name, $indices);
+    if ($idx > -1)
+    {
+		seek($fh, $indices->[$idx]->[1], 0);
+        while ($line = <$fh>)
+        {
+            chomp($line);
+            if ($line =~ /^>(\S+)/)
+            {
+                if ($1 ne $name)
+                {
+                    last;
+                }
+            }
+            else
+            {
+                $seq .= $line;
+            }
+        }
+	}
+    
+	return $seq;
+}
+
+sub rev_comp_seq 
+{
+    my ($seq) = @_;
+    my ($seqlen) = length($seq);
+    my ($i, $j, $rcseq);
+
+    $rcseq = 'X' x $seqlen;        # pre-extending string for efficiency
+    for ($i = ($seqlen - 1), $j = 0; $i > -1; $i--, $j++) 
+    {
+        substr($rcseq, $j, 1) = $comp_map{(substr($seq, $i, 1))};
+    }
+    return $rcseq;
+}
+
+sub index_sequences
+{
+    my ($fasta_file) = @_;
+    my $line = "";
+    my $seq_name = "";
+    my $pos = -1;
+    my $record = [];
+    my @indices = ();
+
+    open (FILE_IN, "$fasta_file") || die "Fail to open $fasta_file\n";
+    $pos = tell(FILE_IN);
+    while ($line = <FILE_IN>)
+    {
+        chomp($line);
+        if ($line =~ /^>(\S+)/)
+        {
+            $seq_name = $1;
+            $record = [];
+            push(@$record, $seq_name);
+            push(@$record, $pos);
+            push(@indices, $record);
+        }
+        $pos = tell(FILE_IN);
+    }
+    close (FILE_IN);
+
+    my @sorted_indices = sort {$a->[0] cmp $b->[0]} @indices;
+    return \@sorted_indices;
+}
+
+sub bsearch_index
+{
+    my ($x, $a) = @_;            
+    my ($l, $u) = (0, @$a - 1);  
+    my $i;                       
+    while ($l <= $u)
+	{
+		$i = int(($l + $u)/2);
+		if ($a->[$i]->[0] lt $x)
+		{
+		    $l = $i+1;
+		}
+		elsif ($a->[$i]->[0] gt $x)
+		{
+		    $u = $i-1;
+		} 
+		else
+		{
+			return $i; 
+		}
+    }
+    return -1;         	
+}
+
+sub trim
+{
+	my $string = shift;
+	$string =~ s/^\s+//;
+	$string =~ s/\s+$//;
+	return $string;
 }
 
 sub cluster_tDRs
@@ -424,10 +1449,18 @@ sub convert_tdrnamer_outputs
     my $temp_log = $opt_output."-run$$.log";
     my $result = 1;
 
-    my $cmd = $script_path."convert_tdrnamer_outputs --command --fasta ".$fasta_file." --frag ".$tDRs_list." --cluster ".$tDR_cluster." --stk ".$tDRs_stk;
+    my $cmd = $script_path."convert_tdrnamer_outputs --fasta ".$fasta_file." --frag ".$tDRs_list;
+    if (-r $tDR_cluster and -s $tDR_cluster)
+    {
+        $cmd .= " --cluster ".$tDR_cluster." --stk ".$tDRs_stk;
+    }
     if (lc($opt_source) eq "euk" and -r $pre_tDR_cluster and -s $pre_tDR_cluster)
     {
         $cmd .= " --locicluster ".$pre_tDR_cluster." --locistk ".$pre_tDRs_stk;
+    }
+    if (!$opt_skipcheck)
+    {
+        $cmd .= " --command";
     }
     $cmd .= " 2>".$temp_log;
     &write_message("Status", "Naming tDRs and summarizing results");
@@ -506,13 +1539,12 @@ sub find_tDRs
     my $result = 0;
     my $find_tdr_log = $opt_output."-find-tdrs.log";
     my $temp_fasta_file = $opt_output."-found-seq.fa";
-    my $genome_file = $opt_db."-genome-info.txt";
     my $tDR_count = 0;
     
     my $cmd = $script_path."find_tdr --names ".$filtered_names." --db ".$opt_db." --fasta ".$temp_fasta_file; 
-    if (-r $genome_file)
+    if (-r $opt_genomes)
     {
-        $cmd .= " --genomes ".$genome_file;
+        $cmd .= " --genomes ".$opt_genomes;
     }
     $cmd .= " > ".$find_tdr_log;
     &write_message("Status", "Searching sequences by tDR names in ".$filtered_names);
@@ -530,7 +1562,62 @@ sub find_tDRs
         }
     }
 
-    return ($result, $temp_fasta_file, $tDR_count);
+    return ($result, $temp_fasta_file, $tDR_count, $find_tdr_log);
+}
+
+sub convert_tdrnamer_outputs_for_names
+{
+    my ($fasta_file, $tDRs_list, $tDRs_stk, $tDR_cluster, $pre_tDRs_stk, $pre_tDR_cluster, $filtered_names, $find_tdr_log) = @_;
+    my $temp_log = $opt_output."-run$$.log";
+    my $result = 1;
+
+    my $cmd = $script_path."convert_tdrnamer_outputs --fasta ".$fasta_file." --frag ".$tDRs_list;
+    if (-r $tDR_cluster and -s $tDR_cluster)
+    {
+        $cmd .= " --cluster ".$tDR_cluster." --stk ".$tDRs_stk;
+    }
+    if (lc($opt_source) eq "euk" and -r $pre_tDR_cluster and -s $pre_tDR_cluster)
+    {
+        $cmd .= " --locicluster ".$pre_tDR_cluster." --locistk ".$pre_tDRs_stk;
+    }
+    if (!$opt_skipcheck)
+    {
+        $cmd .= " --command";
+    }
+    else
+    {
+        $cmd .= " --names ".$filtered_names." --namelog ".$find_tdr_log;
+    }
+    $cmd .= " 2>".$temp_log;
+    &write_message("Status", "Naming tDRs and summarizing results");
+    system($cmd);
+    &write_exec_log($temp_log);
+    system("rm $temp_log");
+
+    if (-r "$opt_output-tDR-info.txt" and -r "$opt_output-tDR-groups.txt" and -r "$opt_output-tDR.fa")
+    {
+        my ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR-groups.txt`);
+        if ($line_count < 1)
+        {
+            $result = 0;
+        }
+        ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR-info.txt`);
+        if ($line_count <= 1)
+        {
+            $result = 0;
+        }
+        ($line_count, $dummy) = split(/\s+/, `wc -l $opt_output-tDR.fa`);
+        if ($line_count < 1)
+        {
+            $result = 0;
+        }
+    }
+    else
+    {
+        $result = 0;
+    }
+
+    return $result;
 }
 
 sub display_credits
@@ -545,37 +1632,40 @@ sub print_usage
     print STDERR "\nUsage: tDRnamer [-options]\n\n";
     print STDERR "  Standardized naming for tRNA-derived RNAs\n\n",
     "Required Options:\n",
-    "  -m  --mode <value>     : tDRnamer search mode\n",
+    "  -m  --mode <value>      : tDRnamer search mode\n",
     "                               seq - search by sequence (default)\n",
     "                               name - search by tDR name\n",
-    "  -s  --seq <file>       : Input sequence file determined by file extension\n",
+    "  -s  --seq <file>        : Input sequence file determined by file extension\n",
     "                               - only applicable with --mode=seq\n",
     "                               FASTA file with .fa or .fasta file extension\n",
     "                               FASTQ file with .fq or .fastq file extension\n",
     "                               Compressed FASTA file with .fa.gz or .fasta.gz file extension\n",
     "                               Gzip compressed FASTQ file with .fq.gz or .fastq.gz file extension\n",
     "                               (FASTQ file should contain single-end reads or pre-merged paired-end reads.)\n",
-    "  -n  --name <file>      : Input tDR name file in single-column text file format\n",
+    "  -n  --name <file>       : Input tDR name file in single-column text file format\n",
     "                               - only applicable with --mode=name\n",
-    "  -d  --db <db name>     : Directory and name of reference database\n",
-    "  -r  --source <name>    : Sequence source of reference\n",
+    "  -d  --db <db name>      : Directory and name of reference database\n",
+    "  -r  --source <name>     : Sequence source of reference\n",
     "                               euk - eukaryotes (default)\n",
     "                               bact - bacteria\n",
     "                               arch - archaea\n",
-    "  -o  --output <name>    : Directory and prefix for all default output file names\n",
+    "  -o  --output <name>     : Directory and prefix for all default output file names\n",
     "\n",
     "Other Options:\n",
-    "  -q  --force            : Force to overwrite output files\n",
-    "      --minread <number> : Minimum number of identical sequencing reads to be considered as a tDR (default = 10)\n",
+    "  -q  --force             : Force to overwrite output files\n",
+    "      --max               : Maximum sensitivity (slowest speed)\n",
+    "      --minread <number>  : Minimum number of identical sequencing reads to be considered as a tDR (default = 10)\n",
     "                               - only applicable with --mode=seq and --seq is FASTQ file\n",
-    "      --minlen <number>  : Minimum sequence length (nt) to be considered as a tDR (default = 15)\n",
+    "      --minlen <number>   : Minimum sequence length (nt) to be considered as a tDR (default = 15)\n",
     "                               - only applicable with --mode=seq\n",
     "                               - specify value as 0 to skip minimum sequence length constraint\n",
-    "      --maxlen <number>  : Maximum sequence length (nt) to be considered as a tDR (default = 70)\n",
+    "      --maxlen <number>   : Maximum sequence length (nt) to be considered as a tDR (default = 70)\n",
     "                               - only applicable with --mode=seq\n",
     "                               - specify value as 0 to skip maximum sequence length constraint\n",
-    "  -c  --cores <number>   : Number of processing cores to used for sequence search (default = 4)\n",
-    "  -h  --help             : Print available options\n\n";
+    "      --maxmismatch <num> : Maximum percentage of mismatches by sequence length (default = 10)\n",
+    "                               - only applicable with --max option\n",
+    "  -c  --cores <number>    : Number of processing cores to used for sequence search (default = 4)\n",
+    "  -h  --help              : Print available options\n\n";
 }
 
 sub set_options
@@ -588,15 +1678,20 @@ sub set_options
     $opt_output = "";
     $opt_force = 0;
     $opt_cores = 4;
+    $opt_max = 0;
     $opt_minread = 10;
     $opt_minlen = 15;
     $opt_maxlen = 70;
+    $opt_maxmismatch = 10;
+    $opt_skipcheck = 0;
+    $opt_bin = "";
+    $opt_genomes = "";
     $opt_help = 0;
 
     Getopt::Long::Configure("bundling", "no_auto_abbrev");
     my $result = Getopt::Long::GetOptions("mode|m=s", "seq|s=s", "name|n=s", "db|d=s", "source|r=s", "output|o=s", 
-        "minread=i", "minlen=i", "maxlen=i",
-        "force|q", "cores|c=i", "help|h");
+        "minread=i", "minlen=i", "maxlen=i", "max", "maxmismatch=i",
+        "skipcheck", "force|q", "cores|c=i", "bin|b=s", "genomes=s", "help|h");
 
     if (!$result or $opt_help or ($opt_seq eq "" and $opt_name eq "") or $opt_db eq "" or $opt_output eq "")
     {
@@ -671,7 +1766,7 @@ sub check_options
             &write_message("Error", "Fail to read tDR name file ".$opt_name);
             $valid = 0;
         }
-    }
+    }	
     if (!-r "$opt_db-tRNAgenome.fa")
     {
         &write_message("Error", "Fail to read reference database ".$opt_db);
@@ -698,9 +1793,24 @@ sub check_options
         &write_message("Error", "Invalid maximum sequence length for tDRs. Please specify a length between 15 nt and 100 nt.");
         $valid = 0;
     }
+    if ((($opt_maxmismatch != 10 and ($opt_maxmismatch < 1 or $opt_maxmismatch > 20)) or int($opt_maxmismatch) != $opt_maxmismatch)
+        and $opt_max)
+    {
+        &write_message("Error", "Invalid maximum percentage of mismatches. Please specify a value between 1 and 20.");
+        $valid = 0;
+    }
+    if (($opt_maxmismatch != 10) and !$opt_max)
+    {
+        &write_message("Warning", "Maximum percentage of mismatches (--maxmismatch) is only applicable to --max. Option is ignored.");
+    }
     if ($opt_cores <= 0 or int($opt_cores) != $opt_cores)
     {
         &write_message("Error", "Invalid number of processing cores. Please specify positive integer with -c option.");
+        $valid = 0;
+    }
+    if ($opt_bin ne "" and !-d $opt_bin)
+    {
+        &write_message("Error", "Invalid bin directory for dependencies.");
         $valid = 0;
     }
 
@@ -727,9 +1837,12 @@ sub get_command_arguments
     $line .= " --db ".$opt_db if ($opt_db ne "");
     $line .= " --source ".$opt_source if ($opt_source ne "");
     $line .= " --output ".$opt_output if ($opt_output ne "");
-    $line .= " --minread ".$opt_minread if (lc($opt_mode) eq "seq");
+    $line .= " --max" if ($opt_max);
+    $line .= " --minread ".$opt_minread if (lc($opt_mode) eq "seq" and 
+        ($opt_seq =~ /\.fastq$/ or $opt_seq =~ /\.fastq.gz$/ or $opt_seq =~ /\.fq$/ or $opt_seq =~ /\.fq.gz$/));
     $line .= " --minlen ".$opt_minlen if (lc($opt_mode) eq "seq");
     $line .= " --maxlen ".$opt_maxlen if (lc($opt_mode) eq "seq");
+    $line .= " --maxmismatch ".$opt_maxmismatch if ($opt_max and $opt_maxmismatch != 10);
 	$line .= " --cores ".$opt_cores if ($opt_cores >= 1);
     $line .= " --force" if ($opt_force);
     
@@ -764,7 +1877,7 @@ sub write_exec_log
     my ($temp_log) = @_;
     if (-s $temp_log > 0)
     {
-        my $line + "";
+        my $line = "";
         open(FILE_IN, "$temp_log");
         while ($line = <FILE_IN>)
         {

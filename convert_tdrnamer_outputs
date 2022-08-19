@@ -78,66 +78,69 @@ sub set_options
 
 sub merge_clusters
 {
-	my $all_clusters = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-groups.txt";
+	my $all_clusters = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-tDR-groups.txt";
 	my $line = "";
 	my $cluster_count = 0;
 	my $source_start = 0;
 	my @sources = ();
 	
 	open(FILE_OUT, ">$all_clusters") or die "Fail to open $all_clusters\n";
-	open(FILE_IN, "$opt_cluster") or die "Fail to open $opt_cluster\n";
-	while ($line = <FILE_IN>)
+	if ($opt_cluster ne "")
 	{
-		if ($line =~ /^Fragment Cluster (\d+):/)
+		open(FILE_IN, "$opt_cluster") or die "Fail to open $opt_cluster\n";
+		while ($line = <FILE_IN>)
 		{
-			$cluster_count = $1;
-			$line = "tDR Group".substr($line, 16);
-			print FILE_OUT $line;
-		}
-		elsif ($line =~ /^Fragment Singleton (\d+):/)
-		{
-			$cluster_count = $1;
-			$line = "tDR".substr($line, 8);
-			print FILE_OUT $line;
-		}
-		elsif ($line =~ /^Fragment Coverage/)
-		{
-			$line = "tDR Location\n";
-			print FILE_OUT $line;
-			$source_start = 1;
-			@sources = ();
-		}
-		elsif ($line =~ /^Fragment Aminos/)
-		{
-			if (scalar(@sources) > 0)
+			if ($line =~ /^Fragment Cluster (\d+):/)
 			{
-				my @sorted_sources = sort sort_tDR_cluster_location @sources;
-				for (my $i = 0; $i < scalar(@sorted_sources); $i++)
-				{
-					print FILE_OUT $sorted_sources[$i];
-				}
+				$cluster_count = $1;
+				$line = "tDR Group".substr($line, 16);
+				print FILE_OUT $line;
 			}
-			$source_start = 0;
-			@sources = ();
-			$line = "tDR Isotype(s)\n";
-			print FILE_OUT $line;
+			elsif ($line =~ /^Fragment Singleton (\d+):/)
+			{
+				$cluster_count = $1;
+				$line = "tDR".substr($line, 8);
+				print FILE_OUT $line;
+			}
+			elsif ($line =~ /^Fragment Coverage/)
+			{
+				$line = "tDR Location\n";
+				print FILE_OUT $line;
+				$source_start = 1;
+				@sources = ();
+			}
+			elsif ($line =~ /^Fragment Aminos/)
+			{
+				if (scalar(@sources) > 0)
+				{
+					my @sorted_sources = sort sort_tDR_cluster_location @sources;
+					for (my $i = 0; $i < scalar(@sorted_sources); $i++)
+					{
+						print FILE_OUT $sorted_sources[$i];
+					}
+				}
+				$source_start = 0;
+				@sources = ();
+				$line = "tDR Isotype(s)\n";
+				print FILE_OUT $line;
+			}
+			elsif ($line =~ /^Fragment Mismatches/ or $line =~ /^Fragment Alignment/)
+			{
+				$line = "tDR".substr($line, 8);
+				print FILE_OUT $line;
+			}
+			elsif ($source_start)
+			{
+				push(@sources, $line);
+			}
+			else
+			{
+				print FILE_OUT $line;
+			}
 		}
-		elsif ($line =~ /^Fragment Mismatches/ or $line =~ /^Fragment Alignment/)
-		{
-			$line = "tDR".substr($line, 8);
-			print FILE_OUT $line;
-		}
-		elsif ($source_start)
-		{
-			push(@sources, $line);
-		}
-		else
-		{
-			print FILE_OUT $line;
-		}
+		close(FILE_IN);
 	}
-	close(FILE_IN);
-	
+
 	if ($opt_locicluster ne "")
 	{
 		open(FILE_IN, "$opt_locicluster") or die "Fail to open $opt_locicluster\n";
@@ -366,8 +369,10 @@ sub get_fragment_seq
 	my $index = -1;
 	my $alignment_file = undef;
 	my $found = 0;
-	
-	open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	if ($opt_stk ne "")
+	{
+		open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	}
 	if ($opt_locistk ne "")
 	{
 		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
@@ -401,7 +406,10 @@ sub get_fragment_seq
 		}
 	}
 	
-	close($fh_stk);
+	if ($opt_stk ne "")
+	{
+		close($fh_stk);
+	}
 	if ($opt_locistk ne "")
 	{
 		close($fh_locistk);
@@ -412,7 +420,10 @@ sub compute_name
 {
 	my ($fragments) = @_;
 	
-	open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	if ($opt_stk ne "")
+	{
+		open($fh_stk, "$opt_stk") or die "Fail to open $opt_stk\n";
+	}
 	if ($opt_locistk ne "")
 	{
 		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
@@ -427,7 +438,10 @@ sub compute_name
 		$fragments->[$i]->[18] = $mismatch_counts;
 	}
 	
-	close($fh_stk);
+	if ($opt_stk ne "")
+	{
+		close($fh_stk);
+	}
 	if ($opt_locistk ne "")
 	{
 		close($fh_locistk);
@@ -698,7 +712,7 @@ sub write_name_summary_json
 {
 	my ($tDR_names, $fragments) = @_;
 
-	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-name-tDR-summary.json";
+	my $filename = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-name-tDR-summary.json";
 	my $i = -1;
 	
 	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
@@ -786,7 +800,7 @@ sub write_summary_json
 {
 	my ($fragments) = @_;
 	
-	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-summary.json";
+	my $filename = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-tDR-summary.json";
 	
 	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
 	print FILE_OUT "{\n\t\"data\": [\n";
@@ -847,7 +861,7 @@ sub write_fragment_details
 {
 	my ($tDR_names, $fragments) = @_;
 	
-	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR-info.txt";
+	my $filename = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-tDR-info.txt";
 	my $fh;
 	
 	open($fh, ">$filename") or die "Fail to open $filename\n";
@@ -988,7 +1002,7 @@ sub write_fasta
 {
 	my ($tDR_names, $fragments) = @_;
 	
-	my $filename = substr($opt_cluster, 0, rindex($opt_cluster, "-clusters.txt")) . "-tDR.fa";
+	my $filename = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-tDR.fa";
 	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
 	
 	if (defined $tDR_names)

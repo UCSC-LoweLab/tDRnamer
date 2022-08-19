@@ -34,7 +34,12 @@ echo -e "\nExample Run 2\n"
 mkdir -p run2
 "$SCRIPTDIR/tDRnamer" -m seq -s ExampleSequences.fa -d db/hg38 -r euk -o run2/ExampleSequences
 
-# Find tDRs by names
+# Name tDRs from fasta with maximum sensitivity
 echo -e "\nExample Run 3\n"
 mkdir -p run3
-"$SCRIPTDIR/tDRnamer" -m name -n ExampleNames.txt -d db/hg38 -r euk -o run3/ExampleNames
+"$SCRIPTDIR/tDRnamer" -m seq -s ExampleSequences.fa -d db/hg38 -r euk --max -o run3/ExampleSequences
+
+# Find tDRs by names
+echo -e "\nExample Run 4\n"
+mkdir -p run4
+"$SCRIPTDIR/tDRnamer" -m name -n ExampleNames.txt -d db/hg38 -r euk -o run4/ExampleNames
