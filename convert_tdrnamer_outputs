@@ -5,7 +5,7 @@
 use strict;
 use Getopt::Long;
 
-our ($opt_fasta, $opt_frag, $opt_cluster, $opt_locicluster, $opt_stk, $opt_locistk, $opt_names, $opt_namelog, $opt_command, $opt_help);
+our ($opt_fasta, $opt_frag, $opt_cluster, $opt_locicluster, $opt_stk, $opt_locistk, $opt_var, $opt_names, $opt_namelog, $opt_command, $opt_help);
 our $fh_stk;
 our $fh_locistk;
 
@@ -37,6 +37,7 @@ else
 	if (!$opt_command)
 	{
 		&write_summary_json(\@sorted_fragments);
+		&write_full_name_map(\@sorted_fragments);
 	}
 	&write_fragment_details($tDR_names, \@sorted_fragments);
 	&write_fasta($tDR_names, \@sorted_fragments);
@@ -53,11 +54,12 @@ sub set_options
 	$opt_locicluster = "";
 	$opt_stk = "";
 	$opt_locistk = "";
+	$opt_var = 0;
 	$opt_names = "";
 	$opt_namelog = "";
 	$opt_command = 0;
 	
-	Getopt::Long::GetOptions("fasta=s", "frag=s", "cluster=s", "locicluster=s", "stk=s", "locistk=s", "names=s", "namelog=s", "command", "help|h");
+	Getopt::Long::GetOptions("fasta=s", "frag=s", "cluster=s", "locicluster=s", "stk=s", "locistk=s", "var", "names=s", "namelog=s", "command", "help|h");
 	
 	if ($opt_help || ($opt_fasta eq "" and $opt_names eq ""))
 	{
@@ -69,6 +71,7 @@ sub set_options
 			"--locicluster=<file name>   Pre-tRNA fragment cluster file\n",
 			"--stk=<file name>           Fragment alignment file\n",
 			"--locistk=<file name>       Pre-tRNA fragment alignment file\n",
+			"--var                       Include nucleotide variation in tDR names\n",
 			"--names=<file name>         Input tDR names for searching sequences\n",
 			"--namelog=<file name>       Log file from find_tdr\n",
 			"--command                   Run as part of command-line app\n",
@@ -431,11 +434,12 @@ sub compute_name
 
 	for (my $i = 0; $i < scalar(@$fragments); $i++)
 	{
-		my ($name, $synonyms, $indel_counts, $mismatch_counts) = &set_tDR_name($fragments->[$i]);
+		my ($name, $synonyms, $indel_counts, $mismatch_counts, $full_name) = &set_tDR_name($fragments->[$i]);
 		$fragments->[$i]->[15] = $name;
 		$fragments->[$i]->[16] = $synonyms;
 		$fragments->[$i]->[17] = $indel_counts;
 		$fragments->[$i]->[18] = $mismatch_counts;
+		$fragments->[$i]->[19] = $full_name;
 	}
 	
 	if ($opt_stk ne "")
@@ -453,6 +457,7 @@ sub set_tDR_name
 	my ($fragment) = @_;
 	my $name = "tDR-";
 	my @synonyms = ();
+	my $full_name = "";
 	my $codes = [];
 	my $indel_counts = [];
 	my $mismatch_counts = [];
@@ -550,9 +555,14 @@ sub set_tDR_name
 			{
 				$name .= $iso_code;
 			}
+			$full_name = $name;
 			if (defined($codes->[0]) and $codes->[0] ne "")
 			{
-				$name .= $codes->[0];
+				$full_name .= $codes->[0];
+				if ($opt_var)
+				{
+					$name .= $codes->[0];
+				}
 			}
 			$name_set = 1;
 		}
@@ -563,7 +573,7 @@ sub set_tDR_name
 			{
 				$synonym .= $iso_code;
 			}
-			if (defined($codes->[$i]) and $codes->[$i] ne "")
+			if (defined($codes->[$i]) and $codes->[$i] ne "" and $opt_var)
 			{
 				$synonym .= $codes->[$i];
 			}
@@ -571,7 +581,7 @@ sub set_tDR_name
 		}
 	}
 			
-	return ($name, \@synonyms, $indel_counts, $mismatch_counts);
+	return ($name, \@synonyms, $indel_counts, $mismatch_counts, $full_name);
 }
 
 sub get_indel_mismatch
@@ -857,6 +867,20 @@ sub write_summary_json
 	close(FILE_OUT);
 }
 
+sub write_full_name_map
+{
+	my ($fragments) = @_;
+
+	my $filename = substr($opt_frag, 0, rindex($opt_frag, "-tDR-list.txt")) . "-tDR-fullname-map.txt";
+	
+	open(FILE_OUT, ">$filename") or die "Fail to open $filename\n";
+	for (my $i = 0; $i < scalar(@$fragments); $i++)
+	{
+		print FILE_OUT $fragments->[$i]->[0]."\t".$fragments->[$i]->[19]."\n";
+	}
+	close(FILE_OUT);
+}
+
 sub write_fragment_details
 {
 	my ($tDR_names, $fragments) = @_;
@@ -903,7 +927,7 @@ sub write_detail_line
 			$max_mismatch = $fragments->[$i]->[18]->[$k];
 		}					
 	}
-	for (my $j = 0; $j < scalar(@{$fragments->[$i]})-4; $j++)
+	for (my $j = 0; $j < scalar(@{$fragments->[$i]})-5; $j++)
 	{
 		if ($j > 0)
 		{
@@ -1022,7 +1046,7 @@ sub write_fasta
 	{
 		for (my $i = 0; $i < scalar(@$fragments); $i++)
 		{
-			print FILE_OUT ">".$fragments->[$i]->[15]." Seq_ID:".$fragments->[$i]->[0]." Sprinzl_position: ".$fragments->[$i]->[5]."\n";
+			print FILE_OUT ">".$fragments->[$i]->[15]."|".$fragments->[$i]->[0]." Sprinzl_position: ".$fragments->[$i]->[5]."\n";
 			print FILE_OUT $fragments->[$i]->[14]."\n";
 		}
 	}

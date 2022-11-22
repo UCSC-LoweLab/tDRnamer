@@ -17,12 +17,12 @@
 use strict;
 use Getopt::Long;
 
-our $version = "1.1.0"; 
-our $release_date = "Aug 2022";
+our $version = "1.2.0"; 
+our $release_date = "Nov 2022";
 our $program_id = "tDRnamer ".$version;
 
 our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_max, $opt_minread, $opt_minlen, $opt_maxlen,
-    $opt_maxmismatch, $opt_force, $opt_cores, $opt_skipcheck, $opt_bin, $opt_genomes, $opt_help);
+    $opt_maxmismatch, $opt_var, $opt_force, $opt_cores, $opt_skipcheck, $opt_bin, $opt_genomes, $opt_help);
 our $log = undef;
 our $script_path = "";
 
@@ -1458,6 +1458,10 @@ sub convert_tdrnamer_outputs
     {
         $cmd .= " --locicluster ".$pre_tDR_cluster." --locistk ".$pre_tDRs_stk;
     }
+    if ($opt_var)
+    {
+        $cmd .= " --var";
+    }
     if (!$opt_skipcheck)
     {
         $cmd .= " --command";
@@ -1580,6 +1584,10 @@ sub convert_tdrnamer_outputs_for_names
     {
         $cmd .= " --locicluster ".$pre_tDR_cluster." --locistk ".$pre_tDRs_stk;
     }
+    if ($opt_var)
+    {
+        $cmd .= " --var";
+    }
     if (!$opt_skipcheck)
     {
         $cmd .= " --command";
@@ -1653,6 +1661,8 @@ sub print_usage
     "\n",
     "Other Options:\n",
     "  -q  --force             : Force to overwrite output files\n",
+    "      --var               : Include nucleotide variation (if exists) in tDR names\n",
+    "                               - only applicable with --mode=seq\n",
     "      --max               : Maximum sensitivity (slowest speed)\n",
     "      --minread <number>  : Minimum number of identical sequencing reads to be considered as a tDR (default = 10)\n",
     "                               - only applicable with --mode=seq and --seq is FASTQ file\n",
@@ -1683,6 +1693,7 @@ sub set_options
     $opt_minlen = 15;
     $opt_maxlen = 70;
     $opt_maxmismatch = 10;
+    $opt_var = 0;
     $opt_skipcheck = 0;
     $opt_bin = "";
     $opt_genomes = "";
@@ -1690,7 +1701,7 @@ sub set_options
 
     Getopt::Long::Configure("bundling", "no_auto_abbrev");
     my $result = Getopt::Long::GetOptions("mode|m=s", "seq|s=s", "name|n=s", "db|d=s", "source|r=s", "output|o=s", 
-        "minread=i", "minlen=i", "maxlen=i", "max", "maxmismatch=i",
+        "minread=i", "minlen=i", "maxlen=i", "max", "maxmismatch=i", "var",
         "skipcheck", "force|q", "cores|c=i", "bin|b=s", "genomes=s", "help|h");
 
     if (!$result or $opt_help or ($opt_seq eq "" and $opt_name eq "") or $opt_db eq "" or $opt_output eq "")
@@ -1699,6 +1710,11 @@ sub set_options
         &display_credits();
         &print_usage();
         exit(0);
+    }
+
+    if (lc($opt_mode) eq "name")
+    {
+        $opt_var = 1;
     }
 }
 
@@ -1837,6 +1853,7 @@ sub get_command_arguments
     $line .= " --db ".$opt_db if ($opt_db ne "");
     $line .= " --source ".$opt_source if ($opt_source ne "");
     $line .= " --output ".$opt_output if ($opt_output ne "");
+    $line .= " --var" if ($opt_var);
     $line .= " --max" if ($opt_max);
     $line .= " --minread ".$opt_minread if (lc($opt_mode) eq "seq" and 
         ($opt_seq =~ /\.fastq$/ or $opt_seq =~ /\.fastq.gz$/ or $opt_seq =~ /\.fq$/ or $opt_seq =~ /\.fq.gz$/));

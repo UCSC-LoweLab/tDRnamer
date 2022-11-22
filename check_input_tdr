@@ -117,9 +117,9 @@ sub check_seq
 		$invalid_counts->[0] += 1;
 		$valid = 0;
 	}
-	elsif (&trim($seq_name) !~ /^[\w\-\_\:]+$/)
+	elsif (&trim($seq_name) !~ /^[\w\-\_\:\|]+$/)
 	{
-		print $ct.": Sequence name for ".$seq." contains special character(s).\n";
+		print $ct.": Sequence name for ".$seq." contains unsupported special character(s).\n";
 		$invalid_counts->[1] += 1;
 	}
 	my $s = &trim($seq);
