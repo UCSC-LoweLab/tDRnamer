@@ -55,7 +55,7 @@ our %sprinzl_pos = ('1'=>1,'2'=>2,'3'=>3,'4'=>4,'5'=>5,'6'=>6,'7'=>7,'8'=>8,'9'=
 				'59'=>81,'60'=>82,'61'=>83,'62'=>84,'63'=>85,'64'=>86,'65'=>87,'66'=>88,'67'=>89,'68'=>90,'69'=>91,'70'=>92,'71'=>93,
 				'72'=>94,'73'=>95,'74'=>95,'75'=>96,'76'=>97);
 
-our ($opt_name, $opt_filter, $opt_precursor, $opt_help);
+our ($opt_name, $opt_filter, $opt_min, $opt_precursor, $opt_help);
 
 &set_options();
 &parse_names();
@@ -66,16 +66,18 @@ exit;
 sub set_options
 {
 	$opt_name = "";
+	$opt_min = 15;
 	$opt_filter = "";
 	$opt_precursor = 0;
 	
-	Getopt::Long::GetOptions("name=s", "filter=s", "precursor", "help|h");
+	Getopt::Long::GetOptions("name=s", "min=i", "filter=s", "precursor", "help|h");
 	
-	if ($opt_help || $opt_name eq "")
+	if ($opt_help || $opt_name eq "" || $opt_min <= 0)
 	{
 		die "Usage: check_input_tdr_name [options] > <log file>\n",
 			"Options\n",
 			"--name=<file name>      File name containing fragment names\n",
+			"--min=<value>           Minimum length of tDR (default = 15)\n",
 			"--filter=<file name>    Output file name with invalid entries filtered (optional)\n",
 			"--precursor             Include tDRs derived from pre-tRNAs\n",
 			"--help -h               Print this help\n\n";
@@ -135,7 +137,7 @@ sub check_name
 	my $valid = 1;
 
 	my $trim_name = &trim($query_name);
-	my $min_length = 15;
+	my $min_length = $opt_min;
 	my $type = "tRNA";
 	
 	if ($trim_name !~ /^[\w\-\:]+$/)
@@ -253,7 +255,7 @@ sub check_name
 								$valid = 0;
 								$skip = 1;
 							}
-							elsif (($sprinzl_pos{$start} + $min_length - 1) >= $sprinzl_pos{$end})
+							elsif (($sprinzl_pos{$start} + $min_length - 1) > $sprinzl_pos{$end})
 							{
 								print "Entry ".$ct.": The format of tDR name ".$trim_name." is not valid (code=10).\n";
 								$invalid_counts->[1] += 1;

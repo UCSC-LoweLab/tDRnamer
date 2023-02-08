@@ -17,8 +17,8 @@
 use strict;
 use Getopt::Long;
 
-our $version = "1.2.0"; 
-our $release_date = "Nov 2022";
+our $version = "1.2.1"; 
+our $release_date = "Feb 2023";
 our $program_id = "tDRnamer ".$version;
 
 our ($opt_mode, $opt_seq, $opt_name, $opt_db, $opt_source, $opt_output, $opt_max, $opt_minread, $opt_minlen, $opt_maxlen,
@@ -1504,7 +1504,7 @@ sub check_tDR_names
     my $name_count = 0;
     my $temp_log = $opt_output."-run$$.log";
     my $filtered_names = $opt_output."-filtered-names.txt";
-    my $cmd = $script_path."check_input_tdr_name --name ".$opt_name." --filter ".$filtered_names;
+    my $cmd = $script_path."check_input_tdr_name --name ".$opt_name." --filter ".$filtered_names." --min ".$opt_minlen;
     if (lc($opt_source) eq "euk")
     {
         $cmd .= " --precursor";
@@ -1667,7 +1667,6 @@ sub print_usage
     "      --minread <number>  : Minimum number of identical sequencing reads to be considered as a tDR (default = 10)\n",
     "                               - only applicable with --mode=seq and --seq is FASTQ file\n",
     "      --minlen <number>   : Minimum sequence length (nt) to be considered as a tDR (default = 15)\n",
-    "                               - only applicable with --mode=seq\n",
     "                               - specify value as 0 to skip minimum sequence length constraint\n",
     "      --maxlen <number>   : Maximum sequence length (nt) to be considered as a tDR (default = 70)\n",
     "                               - only applicable with --mode=seq\n",
@@ -1798,7 +1797,7 @@ sub check_options
         &write_message("Error", "Invalid minimum number of reads. Please specify positive integer with --minread option.");
         $valid = 0;
     }
-    if ((($opt_minlen != 0 and $opt_minlen <= 11) or int($opt_minlen) != $opt_minlen) and lc($opt_mode) eq "seq")
+    if (($opt_minlen != 0 and $opt_minlen <= 11) or int($opt_minlen) != $opt_minlen)
     {
         &write_message("Error", "Invalid minimum sequence length for tDRs. Please specify a length > 11 nt.");
         $valid = 0;
@@ -1857,7 +1856,7 @@ sub get_command_arguments
     $line .= " --max" if ($opt_max);
     $line .= " --minread ".$opt_minread if (lc($opt_mode) eq "seq" and 
         ($opt_seq =~ /\.fastq$/ or $opt_seq =~ /\.fastq.gz$/ or $opt_seq =~ /\.fq$/ or $opt_seq =~ /\.fq.gz$/));
-    $line .= " --minlen ".$opt_minlen if (lc($opt_mode) eq "seq");
+    $line .= " --minlen ".$opt_minlen;
     $line .= " --maxlen ".$opt_maxlen if (lc($opt_mode) eq "seq");
     $line .= " --maxmismatch ".$opt_maxmismatch if ($opt_max and $opt_maxmismatch != 10);
 	$line .= " --cores ".$opt_cores if ($opt_cores >= 1);
