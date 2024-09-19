@@ -5,18 +5,18 @@ SCRIPTDIR=$( cd "$( dirname "$REALNAME" )" && pwd )
 
 # Download example data
 echo -e "\nDownloading example data\n"
-wget "http://trna.ucsc.edu/tDRnamer/data/examples/GM12878_AlkB_rep1_merged.fastq.gz"
-wget "http://trna.ucsc.edu/tDRnamer/data/examples/ExampleSequences.fa"
-wget "http://trna.ucsc.edu/tDRnamer/data/examples/ExampleNames.txt"
+wget --no-check-certificate "https://trna.ucsc.edu/tDRnamer/data/examples/GM12878_AlkB_rep1_merged.fastq.gz"
+wget --no-check-certificate "https://trna.ucsc.edu/tDRnamer/data/examples/ExampleSequences.fa"
+wget --no-check-certificate "https://trna.ucsc.edu/tDRnamer/data/examples/ExampleNames.txt"
 
 # Download hg38 reference genome sequence
 echo -e "\nDownloading reference genome\n"
-wget "http://trna.ucsc.edu/tDRnamer/data/examples/hg38_primary_assembly.fa.gz"
+wget --no-check-certificate "https://trna.ucsc.edu/tDRnamer/data/examples/hg38_primary_assembly.fa.gz"
 gzip -d hg38_primary_assembly.fa.gz
 
 # Get tRNA information
 echo -e "\nDownloading tRNA data\n"
-wget "http://gtrnadb.ucsc.edu/genomes/eukaryota/Hsapi38/hg38-tRNAs.tar.gz"
+wget --no-check-certificate "https://gtrnadb.ucsc.edu/genomes/eukaryota/Hsapi38/hg38-tRNAs.tar.gz"
 tar xvf hg38-tRNAs.tar.gz
 
 # Create reference database

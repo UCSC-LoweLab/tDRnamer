@@ -9,6 +9,17 @@ our ($opt_fasta, $opt_frag, $opt_cluster, $opt_locicluster, $opt_stk, $opt_locis
 our $fh_stk;
 our $fh_locistk;
 
+our @sprinzl_pos = ('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16',
+					'17','17a','18','19','20','20a','20b','21','22','23','24','25',
+					'26','27','28','29','30','31','32','33','34','35','36','37','38',
+					'39','40','41','42','43','44','45',
+					'e11','e12','e13','e14','e15','e16','e17',
+					'e1','e2','e3','e4','e5',
+					'e27','e26','e25','e24','e23','e22','e21',
+					'46','47','48','49','50','51','52','53','54','55','56','57','58',
+					'59','60','61','62','63','64','65','66','67','68','69','70','71',
+					'72','73','74','75','76');
+
 &set_options();
 my $all_clusters = &merge_clusters();
 my $tDR_names = undef;
@@ -20,7 +31,7 @@ my ($fragments, $orders) = &read_annotated_fragments();
 &check_tDR_source($fragments);
 &get_frag_cluster_info($fragments, $all_clusters);
 &get_fragment_seq($fragments);
-&compute_name($fragments);
+&compute_name($fragments); 
 if (defined $tDR_names)
 {
 	if (!$opt_command)
@@ -291,15 +302,24 @@ sub check_tDR_source
 		foreach my $source (@sources)
 		{
 			my @parts = split(/-/, $source);
-			if (!defined $isotypes{$parts[1]})
+			my $prefix_index = 0; 
+			for (my $n = 0; $n < scalar(@parts); $n++)
 			{
-				$inconsistent = 1;
-				$isotypes{$parts[1]} = 1;
+				if ($parts[$n] eq "tRNA" or $parts[$n] eq "tRX")
+				{
+					$prefix_index = $n;
+					last;
+				}
 			}
-			if (!defined $anticodons{$parts[2]})
+			if (!defined $isotypes{$parts[$prefix_index+1]})
 			{
 				$inconsistent = 1;
-				$anticodons{$parts[2]} = 1;
+				$isotypes{$parts[$prefix_index+1]} = 1;
+			}
+			if (!defined $anticodons{$parts[$prefix_index+2]})
+			{
+				$inconsistent = 1;
+				$anticodons{$parts[$prefix_index+2]} = 1;
 			}
 		}
 
@@ -432,9 +452,11 @@ sub compute_name
 		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
 	}
 
+	my $pos_map = &get_Sprinzl_position_map();
+
 	for (my $i = 0; $i < scalar(@$fragments); $i++)
 	{
-		my ($name, $synonyms, $indel_counts, $mismatch_counts, $full_name) = &set_tDR_name($fragments->[$i]);
+		my ($name, $synonyms, $indel_counts, $mismatch_counts, $full_name) = &set_tDR_name($fragments->[$i], $pos_map);
 		$fragments->[$i]->[15] = $name;
 		$fragments->[$i]->[16] = $synonyms;
 		$fragments->[$i]->[17] = $indel_counts;
@@ -454,15 +476,27 @@ sub compute_name
 
 sub set_tDR_name
 {
-	my ($fragment) = @_;
+	my ($fragment, $pos_map) = @_;
 	my $name = "tDR-";
 	my @synonyms = ();
 	my $full_name = "";
 	my $codes = [];
 	my $indel_counts = [];
 	my $mismatch_counts = [];
+	my $mismatch_locations = [];
 	
+	my @source = split(/\,/, $fragment->[3]);
 	my ($start, $end) = split(/\.\./, lc($fragment->[5]));
+	if (scalar(@source) > 0 and index($source[0], "mt-tRNA") == 0)
+	{
+		($start, $end) = &get_tDR_Sprinzl_positions($fragment, $pos_map);
+		my $new_pos = $start."..".$end;
+		if (lc($fragment->[5]) ne $new_pos)
+		{
+			$fragment->[5] = $new_pos;
+		}
+	}
+
 	if ($start =~ /^\-([0-9]+)/)
 	{
 		$name .= "L".$1.":";
@@ -500,11 +534,18 @@ sub set_tDR_name
 	
 #	if ($fragment->[8] > 0 or $fragment->[9] > 0)
 #	{
-		($codes, $indel_counts, $mismatch_counts) = &get_indel_mismatch($fragment);
+		($codes, $indel_counts, $mismatch_counts, $mismatch_locations) = &get_indel_mismatch($fragment, $pos_map);
 #	}
-	
+
+	if (scalar(@source) > 0)
+	{
+		if (index($source[0], "mt-tRNA") == 0 and $fragment->[10] ne "None")
+		{
+			$fragment->[10] = $mismatch_locations->[0];
+		}
+	}
+
 	my @parts = split(/\-/, $fragment->[2]);
-	my @source = split(/\,/, $fragment->[3]);
 	
 	my $iso_code = "";
 	if (scalar(@source) > 1)
@@ -537,6 +578,7 @@ sub set_tDR_name
 		my $source_name = substr($source[$i], index($source[$i], "-"));
 		if (index($source[$i], "mt-tRNA") == 0 or index($source[$i], "pt-tRNA") == 0 or index($source[$i], "nmt-tRNA") == 0)
 		{
+			$source_name = substr($source_name, 1);
 			$source_name = substr($source_name, index($source_name, "-"));
 		}
 
@@ -584,15 +626,109 @@ sub set_tDR_name
 	return ($name, \@synonyms, $indel_counts, $mismatch_counts, $full_name);
 }
 
+sub get_Sprinzl_position_map
+{
+	my $line = "";
+	my $ss = "";
+	my @pos_map = ();
+	
+	my $alignment_file = $fh_stk;	
+	seek($alignment_file, 0, 0);
+	while ($line = <$alignment_file>)
+	{
+		chomp($line);
+		if ($line =~ /^#=GC SS_cons\s+(.+)$/)
+		{
+			$ss = $1;
+		}
+	}
+	my $j = 0;
+	my $insert_count = 0;
+	for (my $i = 0; $i < length($ss); $i++)
+	{
+		if (substr($ss, $i, 1) eq "-")
+		{
+			if ($j == 0)
+			{
+				push(@pos_map, "-".(21-$i));
+			}
+			else
+			{
+				push(@pos_map, "+".($i-(length($ss)-20))+1);
+			}
+		}
+		elsif (substr($ss, $i, 1) eq ":" and $j == 0)
+		{
+			push(@pos_map, "-1");
+		}
+		elsif (substr($ss, $i, 1) eq ".")
+		{
+			$insert_count++;
+			push(@pos_map, $sprinzl_pos[$j]."i".$insert_count);
+		}
+		else
+		{
+			$insert_count = 0;
+			push(@pos_map, $sprinzl_pos[$j]);
+			$j++ if ($j < (scalar(@sprinzl_pos)-1));
+		}
+	}
+	return \@pos_map;
+}
+
+sub get_tDR_Sprinzl_positions
+{
+	my ($fragment, $pos_map) = @_;
+	my $line = "";
+	my @lines = ();
+	my $start = "";
+	my $end = "";
+	
+	my $alignment_file = $fh_stk;	
+	seek($alignment_file, 0, 0);
+	while ($line = <$alignment_file>)
+	{
+		chomp($line);
+		if ($line =~ /^#/) {}
+		else
+		{
+			my ($seq_name, $align) = split(/\s+/, $line);
+			if ($fragment->[0] eq $seq_name)
+			{
+				if (scalar(@$pos_map) == length($align))
+				{
+					for (my $i = 0; $i < length($align); $i++)
+					{
+						if (uc(substr($align, $i, 1)) =~ /^[ACGTU]$/)
+						{
+							if ($start eq "")
+							{
+								$start = $pos_map->[$i];
+							}
+							else
+							{
+								$end = $pos_map->[$i];
+							}
+						}
+					}
+				}
+				last;
+			}
+		}
+	}
+	return ($start, $end);
+}
+
 sub get_indel_mismatch
 {
-	my ($fragment) = @_;
+	my ($fragment, $pos_map) = @_;
 	my $line = "";
 	my @lines = ();
 	my %seqs = ();
 	my @codes = ();
 	my @indel_counts = ();
 	my @mismatch_counts = ();
+	my @mismatch_locations = ();
 	
 	my $alignment_file = $fh_stk;
 	
@@ -607,9 +743,10 @@ sub get_indel_mismatch
 		$seqs{$source[$i]} = $i;
 	}
 	$seqs{$fragment->[0]} = scalar(@source);
-	@codes = ("") x (scalar(@source) - 1);
-	@indel_counts = (0) x (scalar(@source) - 1);
-	@mismatch_counts = (0) x (scalar(@source) - 1);
+	@codes = ("") x scalar(@source);
+	@indel_counts = (0) x scalar(@source);
+	@mismatch_counts = (0) x scalar(@source);
+	@mismatch_locations = ("") x scalar(@source);
 
 	seek($alignment_file, 0, 0);
 	while ($line = <$alignment_file>)
@@ -700,6 +837,14 @@ sub get_indel_mismatch
 						else
 						{
 							$codes[$align_ct] .= "-".uc(substr($lines[$align_ct], $i, 1)).$len_ct.uc(substr($lines[$fragment_idx], $i, 1));
+							if (defined $pos_map->[$i])
+							{
+								if ($mismatch_locations[$align_ct] ne "")
+								{
+									$mismatch_locations[$align_ct] .= ",";
+								}
+								$mismatch_locations[$align_ct] .= uc(substr($lines[$fragment_idx], $i, 1)).":".$pos_map->[$i].":".uc(substr($lines[$align_ct], $i, 1));
+							}
 							$mismatch_counts[$align_ct] += 1;
 							$ins_start = 0;
 							$del_start = 0;
@@ -715,7 +860,7 @@ sub get_indel_mismatch
 		}
 	}
 	
-	return (\@codes, \@indel_counts, \@mismatch_counts);
+	return (\@codes, \@indel_counts, \@mismatch_counts, \@mismatch_locations);
 }
 
 sub write_name_summary_json
