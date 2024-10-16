@@ -452,7 +452,11 @@ sub compute_name
 		open($fh_locistk, "$opt_locistk") or die "Fail to open $opt_locistk\n";
 	}
 
-	my $pos_map = &get_Sprinzl_position_map();
+	my $pos_map = undef;
+	if ($opt_stk ne "")
+	{
+		$pos_map = &get_Sprinzl_position_map();
+	}
 
 	for (my $i = 0; $i < scalar(@$fragments); $i++)
 	{
